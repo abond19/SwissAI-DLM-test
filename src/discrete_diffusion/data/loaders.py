@@ -15,6 +15,7 @@ from torch.utils.data.distributed import DistributedSampler
 
 from .. import utils
 from .datasets import (
+    generate_fresh_random_token_dataset,
     generate_in_memory_synthetic_token_dataset,
     generate_synthetic_dataset,
     get_lambada_test_dataset,
@@ -189,6 +190,22 @@ def get_dataset(dataset_name,
     return generate_in_memory_synthetic_token_dataset(
       dataset_size=dataset_size,
       num_unique_samples=synthetic_unique_samples,
+      seq_len=block_size,
+      vocab_size=len(tokenizer),
+      bos_token_id=tokenizer.bos_token_id,
+      eos_token_id=tokenizer.eos_token_id,
+      mask_token_id=tokenizer.mask_token_id,
+      seed=int(synthetic_seed) + seed_offset)
+  elif dataset_name == "synthetic-random":
+    # Fresh random tokens for every index (no fixed pool); used by the speed
+    # benchmark so it runs the real training path without any dataset on disk.
+    dataset_size = int(
+      synthetic_dataset_size
+      if synthetic_dataset_size is not None
+      else (1_000_000 if mode == "train" else 4096))
+    seed_offset = 0 if mode == "train" else 1
+    return generate_fresh_random_token_dataset(
+      dataset_size=dataset_size,
       seq_len=block_size,
       vocab_size=len(tokenizer),
       bos_token_id=tokenizer.bos_token_id,

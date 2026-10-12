@@ -1,0 +1,27 @@
+# Fresh random tokens for every sample, with the GIDD tokenizer (vocab size and
+# special-token ids match nemotron-cc-pretok).  Used by the speed benchmark
+# (scripts/training/submit_speed_benchmark_random_data.sh) to exercise the real
+# training path without any dataset on disk.
+train: synthetic-random
+valid: synthetic-random
+tokenizer_name_or_path: dvruette/gidd-unif-10b
+cache_dir: ${scratch_dir}/synthetic-random-gidd
+wrap: False
+chunking: none
+# Map-style, so Lightning injects the same DistributedSampler as production.
+streaming: False
+insert_train_eos: False
+insert_valid_eos: False
+insert_train_special: False
+insert_valid_special: False
+min_length: 0
+train_min_length: 0
+valid_min_length: 0
+pretok_tokens_column: null
+pretok_local_dir: null
+# Rows are generated on demand, so these sizes cost no memory.  The train size
+# is roughly the production 2B-token subset (2e9 / 2048 tokens per row).  The
+# valid size controls how much work limit_val_batches (a fraction) does.
+synthetic_train_size: 1000000
+synthetic_validation_size: 4096
+synthetic_seed: 1234
