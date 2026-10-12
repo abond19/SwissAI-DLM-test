@@ -65,6 +65,7 @@ class BenchmarkTimerCallback(L.Callback):
       results_log: str | None = None,
       run_label: str = "",
       git_commit: str = "",
+      setup: str = "",
   ) -> None:
     super().__init__()
     self.enabled = bool(enabled)
@@ -73,6 +74,7 @@ class BenchmarkTimerCallback(L.Callback):
     self.results_log = results_log
     self.run_label = str(run_label)
     self.git_commit = str(git_commit)
+    self.setup = str(setup)
 
     self._last_step = -1
     self._window_start = None
@@ -200,7 +202,11 @@ class BenchmarkTimerCallback(L.Callback):
     tps_train_only = _tok_per_s(train_only)
     result = {
       'run_label': self.run_label,
+      'setup': self.setup,
       'git_commit': self.git_commit,
+      'model_name': _sel('model.name'),
+      'model_torch_dtype': _sel('model.torch_dtype'),
+      'optimizer': _sel('optim.name'),
       'timestamp': datetime.datetime.now().astimezone().isoformat(
         timespec='seconds'),
       'hostname': socket.gethostname(),
@@ -242,7 +248,8 @@ class BenchmarkTimerCallback(L.Callback):
       return 'n/a' if v is None else f'{v * scale:.{digits}f}{unit}'
 
     summary = (
-      f"[BENCHMARK] label={self.run_label or '-'} "
+      f"[BENCHMARK] setup={self.setup or '-'} "
+      f"label={self.run_label or '-'} "
       f"commit={self.git_commit or '-'} "
       f"window={window_steps} steps after {self.warmup_steps} warmup | "
       f"median step {_fmt(median, ' ms', 1e3)} "
