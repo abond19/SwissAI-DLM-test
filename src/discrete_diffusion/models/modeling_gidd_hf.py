@@ -607,8 +607,11 @@ class GiddAttention(nn.Module):
         elif self.attention_bias:
             n_heads = self.num_attention_heads
             bias_shape = (batch_size, 1, n_heads, self.head_dim)
-            k_bias = self.k_bias.view(1, 1, n_heads, self.head_dim).expand(bias_shape)
-            v_bias = self.v_bias.view(1, 1, n_heads, self.head_dim).expand(bias_shape)
+            # Cast to the compute dtype: with fp32 weights the cat would
+            # otherwise promote key/value to fp32 and disable flash-attn.
+            # Casting after expand keeps the bias-gradient batch sum in fp32.
+            k_bias = self.k_bias.view(1, 1, n_heads, self.head_dim).expand(bias_shape).to(key.dtype)
+            v_bias = self.v_bias.view(1, 1, n_heads, self.head_dim).expand(bias_shape).to(value.dtype)
             key = torch.cat([k_bias, key], dim=1)
             value = torch.cat([v_bias, value], dim=1)
 
