@@ -192,7 +192,9 @@ export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES%%,*}"
 # SLURM_NTASKS instead of running the single local process.
 unset SLURM_NTASKS SLURM_NTASKS_PER_NODE
 export PYTHONPATH="${REPO_ROOT}:${REPO_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}"
-export PYTHONNOUSERSITE=1
+# Disabled: on this cluster some dependencies (e.g. lightning_utilities) live in
+# the user site-packages (~/.local), which PYTHONNOUSERSITE=1 would hide.
+# export PYTHONNOUSERSITE=1
 export PYTHONUNBUFFERED=1
 export HYDRA_FULL_ERROR=1
 export WANDB_MODE="${WANDB_MODE:-offline}"
