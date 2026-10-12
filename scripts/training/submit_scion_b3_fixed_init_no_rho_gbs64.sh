@@ -20,6 +20,8 @@ HIDDEN_SIZE="${HIDDEN_SIZE:-768}"
 INTERMEDIATE_SIZE="${INTERMEDIATE_SIZE:-$((4 * HIDDEN_SIZE))}"
 N_HEADS="${N_HEADS:-$((HIDDEN_SIZE / 64))}"
 ACTIVATION_CHECKPOINTING="${ACTIVATION_CHECKPOINTING:-false}"
+# torch.compile: auto compiles each GIDD layer and the loss; set false to disable.
+TORCH_COMPILE="${TORCH_COMPILE:-auto}"
 # Parameter storage dtype (configs/model/gidd_hf.yaml default bf16).  fp32 keeps
 # fp32 master weights while trainer.precision=bf16-mixed still computes in bf16.
 MODEL_DTYPE="${MODEL_DTYPE:-bf16}"
@@ -344,7 +346,7 @@ srun --environment=uni-d2 \\
   training.antithetic_sampling=true \\
   training.loss_precision=bf16 \\
   training.fault_tolerant=true \\
-  training.torch_compile=false \\
+  training.torch_compile=${TORCH_COMPILE} \\
   training.log_train_aux_metrics=true \\
   training.sync_train_loss=true \\
   training.validate_after_training=${VALIDATE_AFTER_TRAINING} \\

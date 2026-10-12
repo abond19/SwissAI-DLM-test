@@ -113,8 +113,18 @@ def train(config):
   model._scion_trace_dataloader = getattr(
     train_ds, '_scion_trace_dataloader', None)
 
-  # Torch compile if enabled. Keep Lightning logging out of Dynamo
-  if omegaconf.OmegaConf.select(config, 'training.torch_compile', default=False):
+  # training.torch_compile: auto (default) compiles only algorithms with in-place
+  # compile support; true/false force it on/off.
+  compile_mode = str(omegaconf.OmegaConf.select(
+    config, 'training.torch_compile', default='auto')).strip().lower()
+  if compile_mode not in {'auto', 'true', 'false'}:
+    raise ValueError(
+      "training.torch_compile must be auto, true or false, got "
+      f"{compile_mode!r}.")
+  compile_model = compile_mode == 'true' or (
+    compile_mode == 'auto' and hasattr(model, 'compile_for_training'))
+  # Keep Lightning logging out of Dynamo
+  if compile_model:
     if hasattr(model, 'compile_for_training'):
       # Algorithms whose training step bypasses self.forward (e.g. GIDD)
       # compile their hot modules in place instead.

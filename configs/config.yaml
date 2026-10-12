@@ -43,7 +43,10 @@ training:
   change_of_variables: False
   loss_precision: 'bf16'  # bf16, float32, float64
   finetune_path: ''
-  torch_compile: false
+  # auto: compile in place when the algorithm supports it (GIDD: each layer and
+  # the loss); other algorithms stay eager.  true: always compile (whole
+  # LightningModule if no in-place support).  false: never compile.
+  torch_compile: auto
   log_train_aux_metrics: true
   sync_train_loss: true
   resample: False
