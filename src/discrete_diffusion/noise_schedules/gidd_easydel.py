@@ -12,14 +12,35 @@ from __future__ import annotations
 
 import torch
 import torch.nn as nn
+from omegaconf import DictConfig, OmegaConf
 
-#for now it is tha same as gidd. It does not support per token sampling. 
+
+def _select(config, key: str, default=None):
+  """Optional config lookup that never raises.
+
+  ``getattr(dictconfig, missing_key, default)`` (and ``.get`` / ``in``) make
+  OmegaConf raise and catch a ConfigAttributeError internally.  The exception
+  sits in a reference cycle with its traceback, whose frames keep the caller's
+  locals (e.g. a training/validation step's logits) alive until Python's cyclic
+  GC runs.  ``OmegaConf.select`` returns the default without raising.
+  """
+  if isinstance(config, DictConfig):
+    return OmegaConf.select(config, key, default=default)
+  node = config
+  for part in key.split('.'):
+    node = getattr(node, part, None)
+    if node is None:
+      return default
+  return node
+
+
+#for now it is tha same as gidd. It does not support per token sampling.
 def sample_t(config, batch_size: int, eps: float | None = None, device=None):
   if eps is None:
-    eps = getattr(config.algo, 't_eps', getattr(config.model, 't_eps', 1e-4))
+    eps = _select(config, 'algo.t_eps', _select(config, 'model.t_eps', 1e-4))
 
-  low_disc = bool(getattr(config.training, 'low_discrepancy_sampling',
-                          getattr(config.algo, 'low_discrepancy_sampling', False)))
+  low_disc = bool(_select(config, 'training.low_discrepancy_sampling',
+                          _select(config, 'algo.low_discrepancy_sampling', False)))
   if low_disc:
     t = torch.arange(batch_size, device=device, dtype=torch.float32) / max(batch_size, 1)
     t = (t + torch.rand(1, device=device, dtype=torch.float32)).fmod(1.0)

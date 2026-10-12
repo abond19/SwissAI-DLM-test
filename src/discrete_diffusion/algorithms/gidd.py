@@ -5,6 +5,7 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from omegaconf import OmegaConf
 from torch.utils.checkpoint import checkpoint
 
 from . import base as trainer_base
@@ -718,9 +719,12 @@ class GIDD(trainer_base.TrainerBase):
       return self._sample_t_fn(
         self.config, batch_size, eps=eps, device=self.device)
 
-    low_disc = bool(getattr(
-      self.config.training, 'low_discrepancy_sampling',
-      getattr(self.config.algo, 'low_discrepancy_sampling', False)))
+    # OmegaConf.select: a getattr default on a missing DictConfig key raises
+    # internally and leaks this step's frames (and logits) into a GC cycle.
+    low_disc = bool(OmegaConf.select(
+      self.config, 'training.low_discrepancy_sampling',
+      default=OmegaConf.select(
+        self.config, 'algo.low_discrepancy_sampling', default=False)))
     if not low_disc:
       raise ValueError(
         "algo.time_sampling_scope='global_batch' currently requires "
