@@ -19,6 +19,7 @@ from .. import utils
 LOGGER = utils.get_logger(__name__)
 
 __all__ = [
+    "generate_fresh_random_token_dataset",
     "generate_in_memory_synthetic_token_dataset",
     "generate_synthetic_dataset",
     "get_lambada_test_dataset",
@@ -68,6 +69,64 @@ def generate_in_memory_synthetic_token_dataset(
     tokens[:, -1] = int(eos_token_id)
   attention_mask = torch.ones_like(tokens)
   return _InMemorySyntheticTokenDataset(tokens, attention_mask, dataset_size)
+
+
+class _FreshRandomTokenDataset(torch.utils.data.Dataset):
+  """Map-style dataset that draws new random tokens for every index.
+
+  Unlike ``_InMemorySyntheticTokenDataset`` there is no fixed pool: every
+  index is a distinct sample, generated on the fly from ``(seed, idx)``.  Each
+  training step therefore sees fresh data, while two runs with the same seed
+  and sampler order see identical batches (useful for A/B speed benchmarks).
+  """
+
+  def __init__(self, dataset_size, seq_len, vocab_size, bos_token_id=None,
+               eos_token_id=None, mask_token_id=None, seed=1234):
+    self.dataset_size = int(dataset_size)
+    self.seq_len = int(seq_len)
+    self.vocab_size = max(int(vocab_size), 1)
+    self.bos_token_id = bos_token_id
+    self.eos_token_id = eos_token_id
+    self.mask_token_id = mask_token_id
+    self.seed = int(seed)
+
+  def __len__(self):
+    return self.dataset_size
+
+  def __getitem__(self, idx):
+    generator = torch.Generator().manual_seed(
+      self.seed * 1_000_003 + int(idx))
+    tokens = torch.randint(
+      low=0,
+      high=self.vocab_size,
+      size=(self.seq_len,),
+      generator=generator,
+      dtype=torch.long)
+    if (self.mask_token_id is not None
+        and 0 <= int(self.mask_token_id) < self.vocab_size):
+      tokens[tokens == int(self.mask_token_id)] = 0
+    if self.bos_token_id is not None and self.seq_len > 0:
+      tokens[0] = int(self.bos_token_id)
+    if self.eos_token_id is not None and self.seq_len > 1:
+      tokens[-1] = int(self.eos_token_id)
+    return {
+      'input_ids': tokens,
+      'attention_mask': torch.ones_like(tokens),
+    }
+
+
+def generate_fresh_random_token_dataset(
+    dataset_size, seq_len, vocab_size, bos_token_id=None, eos_token_id=None,
+    mask_token_id=None, seed=1234):
+  """Random tokens generated per index, with no disk, tokenizer or reuse."""
+  return _FreshRandomTokenDataset(
+    dataset_size=dataset_size,
+    seq_len=seq_len,
+    vocab_size=vocab_size,
+    bos_token_id=bos_token_id,
+    eos_token_id=eos_token_id,
+    mask_token_id=mask_token_id,
+    seed=seed)
 
 
 def _generate_synthetic_data(dataset_size, seq_len, vocab_size):
