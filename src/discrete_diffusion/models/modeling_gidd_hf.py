@@ -223,7 +223,9 @@ class RotaryEmbedding(nn.Module):
             rotary_dim=self.rotary_dim,
             is_neox_style=self.is_neox_style,
             offsets=offsets,
-            dtype=self.dtype,
+            # Keep the compute dtype of q/k (bf16 under autocast even with fp32
+            # weights) so flash-attn's matching-half-precision check still passes.
+            dtype=query.dtype,
         )
 
 
