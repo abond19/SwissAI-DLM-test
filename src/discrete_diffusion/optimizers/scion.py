@@ -357,34 +357,42 @@ class Scion(torch.optim.Optimizer):
         defaults = dict(lr=lr, momentum=momentum, scale=scale, unconstrained=unconstrained, norm=norm, norm_kwargs=norm_kwargs)
         super().__init__(params, defaults)
 
+    @torch.no_grad()
     def step(self, closure=None):
         loss = None
         if closure is not None:
             with torch.enable_grad():
                 loss = closure()
+        # Same per-parameter math as the original loop, issued per group:
+        # multi-tensor (foreach) momentum/decay/update kernels, and one batched
+        # Newton-Schulz call per matrix shape instead of one call per matrix.
         for group in self.param_groups:
+            params = [p for p in group['params'] if p.grad is not None]
+            if not params:
+                continue
             lr = group['lr']
             momentum = group['momentum']
             scale = group['scale']
             unconstrained = group['unconstrained']
             norm_backend = norm_dict[group['norm']](**group['norm_kwargs'])
-            for p in group['params']:
-                g = p.grad
-                if g is None:
-                    continue
-                state = self.state[p]
 
-                if momentum != 1:
-                    if 'momentum_buffer' not in state.keys():
-                        state['momentum_buffer'] = torch.zeros_like(g)
-                    buf = state['momentum_buffer']
-                    buf.mul_(1-momentum).add_(g, alpha=momentum)
-                    g = buf
+            directions = [p.grad for p in params]
+            if momentum != 1:
+                bufs = []
+                for p in params:
+                    state = self.state[p]
+                    if 'momentum_buffer' not in state:
+                        state['momentum_buffer'] = torch.zeros_like(p.grad)
+                    bufs.append(state['momentum_buffer'])
+                torch._foreach_mul_(bufs, 1 - momentum)
+                torch._foreach_add_(bufs, directions, alpha=momentum)
+                directions = bufs
 
-                update = scale * norm_backend.lmo(g)
-                if not unconstrained:
-                    p.data.mul_(1-lr)
-                p.data.add_(update, alpha=-lr)
+            updates = torch._foreach_mul(_lmo_all(norm_backend, directions), scale)
+            data = [p.data for p in params]
+            if not unconstrained:
+                torch._foreach_mul_(data, 1 - lr)
+            torch._foreach_add_(data, updates, alpha=-lr)
         return loss
 
     def init(self):
@@ -889,6 +897,59 @@ def zeropower_via_newtonschulz5(G, steps=5):
     if G.size(0) > G.size(1):
         X = X.T
     return X
+
+
+@torch.compile(dynamic=False)
+def zeropower_via_newtonschulz5_batched(G, steps=5):
+    """``zeropower_via_newtonschulz5`` applied to each matrix of a (k, m, n) stack."""
+    assert len(G.shape) == 3
+    a, b, c = (3.4445, -4.7750,  2.0315)
+    X = G.bfloat16()
+    transposed = G.size(-2) > G.size(-1)
+    if transposed:
+        X = X.mT
+
+    # Per-matrix spectral norm bound, as X / (X.norm() + 1e-7) for one matrix.
+    X = X / (X.norm(dim=(-2, -1), keepdim=True) + 1e-7)
+    for _ in range(steps):
+        A = X @ X.mT
+        B = b * A + c * A @ A
+        X = a * X + B @ X
+
+    if transposed:
+        X = X.mT
+    return X
+
+
+def _spectral_lmo_scale(backend, shape):
+    d_out, d_in = shape
+    scale = (d_out / d_in)**0.5 if backend.normalized else d_out**0.5
+    if backend.max:
+        scale = max(1, scale)
+    return scale
+
+
+def _lmo_all(norm_backend, tensors):
+    """``norm_backend.lmo`` for each tensor; Spectral matrices batched by shape."""
+    if not isinstance(norm_backend, Spectral):
+        return [norm_backend.lmo(g) for g in tensors]
+    out = [None] * len(tensors)
+    buckets = {}
+    for i, g in enumerate(tensors):
+        if g.ndim == 2:
+            buckets.setdefault((tuple(g.shape), g.device), []).append(i)
+        else:
+            out[i] = norm_backend.lmo(g)
+    for (shape, _), idx in buckets.items():
+        if len(idx) == 1:
+            out[idx[0]] = norm_backend.lmo(tensors[idx[0]])
+            continue
+        X = zeropower_via_newtonschulz5_batched(
+            torch.stack([tensors[i] for i in idx]), steps=norm_backend.steps)
+        X *= _spectral_lmo_scale(norm_backend, shape)
+        for j, i in enumerate(idx):
+            out[i] = X[j]
+    return out
 
 
 def zeroth_power_via_svd(G):
