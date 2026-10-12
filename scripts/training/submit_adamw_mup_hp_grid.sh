@@ -58,6 +58,8 @@ GRAD_CLIP="${GRAD_CLIP:-1.0}"
 WARMUP_FRAC="${WARMUP_FRAC:-0.1}"
 DECAY_FRAC="${DECAY_FRAC:-0.2}"
 NUM_WORKERS="${NUM_WORKERS:-1}"
+# Validation interval in optimizer steps; Lightning counts micro-batches, so each
+# cell passes VAL_CHECK_INTERVAL * ACC (see topology()).
 VAL_CHECK_INTERVAL="${VAL_CHECK_INTERVAL:-500}"
 LIMIT_VAL_BATCHES="${LIMIT_VAL_BATCHES:-0.5}"
 TRAIN_LOG_EVERY_N_STEPS="${TRAIN_LOG_EVERY_N_STEPS:-25}"
@@ -114,6 +116,7 @@ topology() {  # $1 = B  ->  sets RANKS, ACC, NODES
   RANKS=${ranks}
   ACC=$((gbs / (LOCAL_BATCH * ranks)))
   NODES=$((ranks / NTASKS_PER_NODE))
+  VAL_CHECK_BATCHES=$((VAL_CHECK_INTERVAL * ACC))
 }
 
 fmt() { awk -v a="$1" -v m="$2" 'BEGIN { printf "%.6e", a * m }'; }
@@ -240,7 +243,7 @@ srun --environment=uni-d2 \\
   trainer.log_every_n_steps=${TRAIN_LOG_EVERY_N_STEPS} \\
   trainer.gradient_clip_val=${GRAD_CLIP} \\
   trainer.num_sanity_val_steps=0 \\
-  trainer.val_check_interval=${VAL_CHECK_INTERVAL} \\
+  trainer.val_check_interval=${VAL_CHECK_BATCHES} \\
   trainer.limit_val_batches=${LIMIT_VAL_BATCHES} \\
   trainer.precision=bf16-mixed \\
   loader.global_batch_size=${B} \\
@@ -265,6 +268,7 @@ srun --environment=uni-d2 \\
   callbacks.checkpoint_every_n_steps.every_n_train_steps=${CHECKPOINT_EVERY} \\
   callbacks.checkpoint_every_n_steps.save_top_k=1 \\
   callbacks.checkpoint_every_n_steps.save_last=true \\
+  +callbacks.checkpoint_every_n_steps.save_on_train_epoch_end=true \\
   callbacks.checkpoint_monitor.save_top_k=0 \\
   checkpointing.save_dir="${RUN_STORAGE_DIR}" \\
   checkpointing.resume_from_ckpt=${JOB_RESUME} \\

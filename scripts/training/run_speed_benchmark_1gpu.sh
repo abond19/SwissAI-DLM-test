@@ -290,6 +290,7 @@ CMD=(
   "callbacks.checkpoint_every_n_steps.every_n_train_steps=${CHECKPOINT_EVERY}"
   callbacks.checkpoint_every_n_steps.save_top_k=1
   callbacks.checkpoint_every_n_steps.save_last=true
+  +callbacks.checkpoint_every_n_steps.save_on_train_epoch_end=true
   callbacks.checkpoint_monitor.save_top_k=0
   "checkpointing.save_dir=${RUN_DIR}"
   checkpointing.resume_from_ckpt=false

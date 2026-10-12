@@ -46,10 +46,11 @@ class LateValidationFrequencyCallback(L.Callback):
     if int(trainer.global_step) < start_step:
       return
 
-    # Integer validation intervals are measured in training batches. All our
-    # production runs use accumulation=1, therefore this is optimizer steps.
-    trainer.val_check_interval = self.every_n_steps
-    trainer.val_check_batch = self.every_n_steps
+    # Integer validation intervals are measured in training batches
+    # (micro-batches); convert from optimizer steps.
+    accumulation = max(1, int(getattr(trainer, "accumulate_grad_batches", 1) or 1))
+    trainer.val_check_interval = self.every_n_steps * accumulation
+    trainer.val_check_batch = self.every_n_steps * accumulation
     self._switched = True
 
     if getattr(trainer, "is_global_zero", False):

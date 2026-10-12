@@ -310,6 +310,8 @@ if (( BENCH_STEPS <= BENCH_WARMUP_STEPS )); then
   echo "BENCH_STEPS (${BENCH_STEPS}) must exceed BENCH_WARMUP_STEPS (${BENCH_WARMUP_STEPS})." >&2
   exit 1
 fi
+# VAL_CHECK_INTERVAL is in optimizer steps; Lightning counts micro-batches.
+VAL_CHECK_BATCHES=$((VAL_CHECK_INTERVAL * ACC))
 if (( SEQUENCE_LENGTH <= 0 || TRAIN_LOG_EVERY_N_STEPS <= 0 || VAL_CHECK_INTERVAL <= 0 )); then
   echo "SEQUENCE_LENGTH and the logging / validation intervals must be positive." >&2
   exit 1
@@ -333,7 +335,7 @@ echo "Optimizer: ${SETUP_SUMMARY}, grad clip ${GRAD_CLIP}"
 echo "Launch: ${LAUNCH} | python: ${VENV_PYTHON}"
 echo "Topology: nodes=${NODES}, ranks=${NTASKS}, micro-batch=${LOCAL_BATCH}, accumulation=${ACC}, GBS=${GBS}"
 echo "Data: synthetic-random-gidd, train rows=${SYNTH_TRAIN_ROWS}, valid rows=${SYNTH_VALID_ROWS}, seed=${SYNTH_SEED}"
-echo "Validation every ${VAL_CHECK_INTERVAL} micro-batches (limit_val_batches=${LIMIT_VAL_BATCHES}); checkpoint every ${CHECKPOINT_EVERY} steps"
+echo "Validation every ${VAL_CHECK_INTERVAL} optimizer steps (limit_val_batches=${LIMIT_VAL_BATCHES}); checkpoint every ${CHECKPOINT_EVERY} steps"
 echo "Output: ${RUN_STORAGE_DIR}"
 echo "Results log: ${RESULTS_LOG}"
 echo "W&B: mode=${WANDB_MODE_SETTING}, ${WANDB_ENTITY}/${WANDB_PROJECT}, group=${WANDB_GROUP}"
@@ -463,7 +465,7 @@ ${LAUNCH_LINES}
   trainer.log_every_n_steps=${TRAIN_LOG_EVERY_N_STEPS} \\
   trainer.gradient_clip_val=${GRAD_CLIP} \\
   trainer.num_sanity_val_steps=${NUM_SANITY_VAL_STEPS} \\
-  trainer.val_check_interval=${VAL_CHECK_INTERVAL} \\
+  trainer.val_check_interval=${VAL_CHECK_BATCHES} \\
   trainer.limit_val_batches=${LIMIT_VAL_BATCHES} \\
   trainer.precision=bf16-mixed \\
   loader.global_batch_size=${GBS} \\
@@ -495,6 +497,7 @@ ${LAUNCH_LINES}
   callbacks.checkpoint_every_n_steps.every_n_train_steps=${CHECKPOINT_EVERY} \\
   callbacks.checkpoint_every_n_steps.save_top_k=${CHECKPOINT_SAVE_TOP_K} \\
   callbacks.checkpoint_every_n_steps.save_last=${CHECKPOINT_SAVE_LAST} \\
+  +callbacks.checkpoint_every_n_steps.save_on_train_epoch_end=true \\
   callbacks.checkpoint_monitor.save_top_k=${CHECKPOINT_MONITOR_SAVE_TOP_K} \\
   checkpointing.save_dir="${RUN_STORAGE_DIR}" \\
   checkpointing.resume_from_ckpt=false \\
