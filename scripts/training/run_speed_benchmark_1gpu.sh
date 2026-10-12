@@ -44,6 +44,13 @@ DRY_RUN="${DRY_RUN:-0}"   # 1: print the command and exit
 # Extra Hydra overrides appended to the command, space-separated, for keys the
 # script does not already set, e.g. EXTRA_ARGS="+trainer.inference_mode=false".
 EXTRA_ARGS="${EXTRA_ARGS:-}"
+# Validation memory diagnostics (off by default; see BenchmarkTimerCallback):
+#   GC_EACH_VAL_STEP=1   gc.collect() before each validation batch, print memory
+#   MEMORY_SNAPSHOT=1    record CUDA allocations from the post-training validation
+#                        and write snapshots (memory_viz) to the run dir;
+#                        MEMORY_SNAPSHOT=all records from the start (slows training)
+GC_EACH_VAL_STEP="${GC_EACH_VAL_STEP:-0}"
+MEMORY_SNAPSHOT="${MEMORY_SNAPSHOT:-}"
 
 # ---------------------------------------------------------------------------
 # Paths.
@@ -298,6 +305,12 @@ CMD=(
   wandb.job_type=speed_benchmark
   "+wandb.tags=[speed_benchmark,random_data,1gpu,${BENCH_SETUP},${BENCH_LABEL},${MODEL_DTYPE}]"
 )
+if [[ "${GC_EACH_VAL_STEP}" == "1" ]]; then
+  CMD+=(+callbacks.benchmark_timer.gc_each_val_step=true)
+fi
+if [[ -n "${MEMORY_SNAPSHOT}" && "${MEMORY_SNAPSHOT}" != "0" ]]; then
+  CMD+=("+callbacks.benchmark_timer.memory_snapshot='${MEMORY_SNAPSHOT}'")
+fi
 if [[ -n "${EXTRA_ARGS}" ]]; then
   read -r -a EXTRA_ARGS_ARRAY <<< "${EXTRA_ARGS}"
   CMD+=("${EXTRA_ARGS_ARRAY[@]}")
