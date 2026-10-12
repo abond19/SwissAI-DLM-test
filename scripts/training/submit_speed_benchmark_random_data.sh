@@ -282,7 +282,19 @@ WANDB_GROUP="${WANDB_GROUP:-speed_benchmark_random_data_${BENCH_SETUP}}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
-VENV_PYTHON="${REPO_ROOT}/venv-docker/bin/python"
+# Python with the project's dependencies: VENV_PYTHON if set, else the uni-d2
+# container's venv when present (CSCS), else the active conda environment.
+if [[ -z "${VENV_PYTHON:-}" ]]; then
+  if [[ -x "${REPO_ROOT}/venv-docker/bin/python" ]]; then
+    VENV_PYTHON="${REPO_ROOT}/venv-docker/bin/python"
+  elif [[ -n "${CONDA_PREFIX:-}" && -x "${CONDA_PREFIX}/bin/python" ]]; then
+    VENV_PYTHON="${CONDA_PREFIX}/bin/python"
+  else
+    # The sbatch path runs inside the uni-d2 container, where the venv exists
+    # even if it is not visible from this shell.
+    VENV_PYTHON="${REPO_ROOT}/venv-docker/bin/python"
+  fi
+fi
 # Only used for the Hugging Face cache (GIDD tokenizer) and run outputs.
 DATA_ROOT="${DATA_ROOT:-/iopsstor/scratch/cscs/zdelbari/SwissAI-DLM-data}"
 OUTPUT_ROOT="${OUTPUT_ROOT:-${DATA_ROOT}/outputs/speed_benchmark}"
@@ -318,13 +330,18 @@ echo "Speed benchmark on random data: setup=${BENCH_SETUP}, label=${BENCH_LABEL}
 echo "Steps: ${BENCH_STEPS} total, ${BENCH_WARMUP_STEPS} warmup excluded from timing"
 echo "Model: ${MODEL_CONFIG}, n_blocks=${N_BLOCKS}, hidden=${HIDDEN_SIZE}, heads=${N_HEADS}, activation_checkpointing=${ACTIVATION_CHECKPOINTING}, weights=${MODEL_DTYPE}, forward autocast=${FORWARD_AUTOCAST}"
 echo "Optimizer: ${SETUP_SUMMARY}, grad clip ${GRAD_CLIP}"
-echo "Launch: ${LAUNCH}"
+echo "Launch: ${LAUNCH} | python: ${VENV_PYTHON}"
 echo "Topology: nodes=${NODES}, ranks=${NTASKS}, micro-batch=${LOCAL_BATCH}, accumulation=${ACC}, GBS=${GBS}"
 echo "Data: synthetic-random-gidd, train rows=${SYNTH_TRAIN_ROWS}, valid rows=${SYNTH_VALID_ROWS}, seed=${SYNTH_SEED}"
 echo "Validation every ${VAL_CHECK_INTERVAL} micro-batches (limit_val_batches=${LIMIT_VAL_BATCHES}); checkpoint every ${CHECKPOINT_EVERY} steps"
 echo "Output: ${RUN_STORAGE_DIR}"
 echo "Results log: ${RESULTS_LOG}"
 echo "W&B: mode=${WANDB_MODE_SETTING}, ${WANDB_ENTITY}/${WANDB_PROJECT}, group=${WANDB_GROUP}"
+
+if [[ "${LAUNCH}" == local && ! -x "${VENV_PYTHON}" ]]; then
+  echo "Python not found: ${VENV_PYTHON}. Activate the conda environment or set VENV_PYTHON." >&2
+  exit 1
+fi
 
 if [[ "${DRY_RUN}" == "1" ]]; then
   echo "Dry run only. Use DRY_RUN=0 to submit."
