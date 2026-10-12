@@ -43,6 +43,10 @@ class BenchmarkTimerCallback(L.Callback):
   synchronizations (window start/end and around each validation), so it does
   not perturb the per-step behaviour it is measuring.
 
+  It also times the optimizer update itself (``optimizer_step_*``) with CUDA
+  events, without extra synchronization: from the end of Lightning's closure
+  (forward, backward, gradient clipping) to the return of ``optimizer.step``.
+
   Reported step times:
 
   - ``step_time_median_s``: median of per-step wall-clock deltas, skipping
@@ -105,6 +109,7 @@ class BenchmarkTimerCallback(L.Callback):
     self.memory_snapshot = snapshot
     self._diagnostics = self.gc_each_val_step or bool(self.memory_snapshot)
     self._recording = False
+    self._opt_events = []
 
     self._last_step = -1
     self._window_start = None
@@ -149,6 +154,55 @@ class BenchmarkTimerCallback(L.Callback):
     torch.cuda.memory._dump_snapshot(path)
     if trainer.is_global_zero:
       print(f'[BENCHMARK-MEM] wrote {path}', flush=True)
+
+  def _timing_optimizer(self) -> bool:
+    return (self.enabled and self._window_start is not None
+            and not self._finished and torch.cuda.is_available())
+
+  def _instrument_optimizer(self, optimizer) -> None:
+    """Record CUDA events around the parameter update in ``optimizer.step``.
+
+    Lightning passes a closure that runs forward/backward/clipping; the update
+    starts once it returns, so the start event is recorded there.
+    """
+    original_step = optimizer.step
+    callback = self
+
+    def timed_step(*args, **kwargs):
+      if not callback._timing_optimizer():
+        return original_step(*args, **kwargs)
+      start = torch.cuda.Event(enable_timing=True)
+      end = torch.cuda.Event(enable_timing=True)
+      started = []
+      args = list(args)
+      closure = kwargs.get('closure', args[0] if args else None)
+      if closure is None:
+        start.record()
+        started.append(True)
+      else:
+        def timed_closure():
+          result = closure()
+          start.record()
+          started.append(True)
+          return result
+        if 'closure' in kwargs:
+          kwargs['closure'] = timed_closure
+        else:
+          args[0] = timed_closure
+      out = original_step(*args, **kwargs)
+      if started:
+        end.record()
+        callback._opt_events.append((start, end))
+      return out
+
+    optimizer.step = timed_step
+
+  def on_train_start(self, trainer, pl_module):
+    del pl_module
+    if not self.enabled or not torch.cuda.is_available():
+      return
+    for optimizer in trainer.optimizers:
+      self._instrument_optimizer(optimizer)
 
   def on_fit_start(self, trainer, pl_module):
     del pl_module
@@ -296,6 +350,9 @@ class BenchmarkTimerCallback(L.Callback):
                        if global_batch and seq_len else None)
 
     median = statistics.median(self._deltas) if self._deltas else None
+    # Events were recorded asynchronously; the sync above makes them readable.
+    opt_times = [start.elapsed_time(end) / 1e3 for start, end in self._opt_events]
+    opt_median = statistics.median(opt_times) if opt_times else None
     train_only = ((window_s - self._val_total_s) / window_steps
                   if window_steps > 0 else None)
     end_to_end = window_s / window_steps if window_steps > 0 else None
@@ -349,6 +406,12 @@ class BenchmarkTimerCallback(L.Callback):
       'checkpoint_count': self._ckpt_count,
       'peak_memory_allocated_gib': peak_alloc,
       'peak_memory_reserved_gib': peak_reserved,
+      'optimizer_steps_measured': len(opt_times),
+      'optimizer_step_median_s': opt_median,
+      'optimizer_step_p10_s': _percentile(opt_times, 0.10),
+      'optimizer_step_p90_s': _percentile(opt_times, 0.90),
+      'optimizer_step_fraction_of_median': (
+        opt_median / median if opt_median and median else None),
     }
 
     def _fmt(v, unit='', scale=1.0, digits=1):
@@ -366,6 +429,8 @@ class BenchmarkTimerCallback(L.Callback):
       f"end-to-end mean {_fmt(end_to_end, ' ms', 1e3)} | "
       f"{_fmt(result['tokens_per_s_per_gpu_median'], ' tok/s/GPU', 1.0, 0)} | "
       f"validation {self._val_count}x {_fmt(self._val_total_s, ' s')} | "
+      f"optimizer step {_fmt(opt_median, ' ms', 1e3)} "
+      f"({_fmt(result['optimizer_step_fraction_of_median'], '%', 100.0, 0)} of step) | "
       f"checkpoints {self._ckpt_count} | "
       f"peak mem {peak_alloc:.1f} GiB alloc / {peak_reserved:.1f} GiB reserved")
     LOGGER.info(summary)
