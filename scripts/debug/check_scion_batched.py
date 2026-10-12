@@ -81,18 +81,34 @@ def set_grads(groups_a, groups_b, seed):
       pa.grad, pb.grad = g.clone(), g.clone()
 
 
+def _max_rel_diff(refs, others):
+  exact = all(torch.equal(r, o) for r, o in zip(refs, others))
+  worst = max(((r.float() - o.float()).abs().max() / r.float().abs().max()).item()
+              for r, o in zip(refs, others))
+  return 'identical' if exact else f'max relative diff {worst:.1e}'
+
+
+@torch.no_grad()
 def compare_spectral_lmo(dtype):
-  """Batched vs per-matrix Newton-Schulz on identical inputs (isolates batching)."""
+  """Newton-Schulz on identical inputs: batched vs per-matrix, plus a noise floor.
+
+  The noise floor compares two versions of the *original* per-matrix code
+  (compiled vs eager).  Newton-Schulz runs in bf16 and amplifies small
+  rounding differences, so batching is fine if it differs by a similar amount.
+  """
   gen = torch.Generator(device='cuda').manual_seed(7)
   backend = S.Spectral(steps=5)
   mats = [torch.randn(shape, generator=gen, device='cuda').to(dtype)
           for _ in range(L) for shape in [(H, H)] * 4 + [(I, H), (H, I)]]
   ref = [backend.lmo(m.clone()) for m in mats]
   new = S._lmo_all(backend, [m.clone() for m in mats])
-  exact = all(torch.equal(r, n) for r, n in zip(ref, new))
-  worst = max(((r.float() - n.float()).abs().max() / r.float().abs().max()).item()
-              for r, n in zip(ref, new))
-  return exact, worst
+  eager_ns = S.zeropower_via_newtonschulz5._torchdynamo_orig_callable
+  eager = []
+  for m in mats:
+    x = eager_ns(m.clone().reshape(len(m), -1), steps=backend.steps).view(m.shape)
+    x *= S._spectral_lmo_scale(backend, m.shape)
+    eager.append(x)
+  return _max_rel_diff(ref, new), _max_rel_diff(ref, eager)
 
 
 def gpu_ms(fn, n):
@@ -110,6 +126,8 @@ def main():
   if not torch.cuda.is_available():
     raise SystemExit('Needs a GPU.')
   for dtype in (torch.bfloat16, torch.float32):
+    # Fresh compile caches per dtype, as in a training run (one dtype only).
+    torch._dynamo.reset()
     ga, gb = make_groups(dtype), make_groups(dtype)
     init = [[p.detach().clone() for p in g['params']] for g in ga]
     ref = S.Scion(ga, lr=1e-4, momentum=0.2)
@@ -133,9 +151,9 @@ def main():
                    f", momentum buffers {'identical' if bufs else 'differ'}")
     print(f'{dtype} after {STEPS} steps:')
     print('\n'.join(lines))
-    exact, worst = compare_spectral_lmo(dtype)
-    print(f"  Newton-Schulz batched vs per-matrix, same input: "
-          f"{'identical' if exact else f'max relative diff {worst:.1e}'}")
+    batched, floor = compare_spectral_lmo(dtype)
+    print(f'  Newton-Schulz, same input: batched vs per-matrix {batched}; '
+          f'noise floor (per-matrix compiled vs eager) {floor}')
 
     ref_ms = gpu_ms(lambda: reference_step(ref), TIMED)
     new_ms = gpu_ms(new.step, TIMED)
