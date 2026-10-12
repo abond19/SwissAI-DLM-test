@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime
+import gc
 import json
 import logging
 import os
@@ -55,6 +56,20 @@ class BenchmarkTimerCallback(L.Callback):
   Validation after ``trainer.fit`` returns (``validate_after_training``) and
   the final ``last.ckpt`` write in ``train.py`` happen after the window and
   are not counted.
+
+  Opt-in memory diagnostics for validation (both off by default):
+
+  - ``gc_each_val_step``: run ``gc.collect()`` before every validation batch
+    and print GPU memory before/after it.  If memory that grows across
+    validation batches is freed by this, it is held by Python reference cycles.
+  - ``memory_snapshot``: ``'validate'`` records CUDA allocation history from
+    the start of the post-training validation (``trainer.validate``); ``'all'``
+    records from the start of fit (slows training; timings are then not
+    comparable).  Snapshots are written to ``output_dir`` at the start and end
+    of the post-training validation and on any exception (e.g. CUDA OOM).
+    Open them at https://pytorch.org/memory_viz.
+
+  With either enabled, GPU memory is printed at each validation batch.
   """
 
   def __init__(
@@ -66,6 +81,8 @@ class BenchmarkTimerCallback(L.Callback):
       run_label: str = "",
       git_commit: str = "",
       setup: str = "",
+      gc_each_val_step: bool = False,
+      memory_snapshot: str = "",
   ) -> None:
     super().__init__()
     self.enabled = bool(enabled)
@@ -75,6 +92,19 @@ class BenchmarkTimerCallback(L.Callback):
     self.run_label = str(run_label)
     self.git_commit = str(git_commit)
     self.setup = str(setup)
+    self.gc_each_val_step = bool(gc_each_val_step)
+    snapshot = str(memory_snapshot or '').strip().lower()
+    if snapshot in ('1', 'true', 'validate'):
+      snapshot = 'validate'
+    elif snapshot in ('', '0', 'false', 'none'):
+      snapshot = ''
+    elif snapshot != 'all':
+      raise ValueError(
+        "memory_snapshot must be '', 'validate' (or 1) or 'all', got "
+        f"{memory_snapshot!r}")
+    self.memory_snapshot = snapshot
+    self._diagnostics = self.gc_each_val_step or bool(self.memory_snapshot)
+    self._recording = False
 
     self._last_step = -1
     self._window_start = None
@@ -87,6 +117,72 @@ class BenchmarkTimerCallback(L.Callback):
     self._val_count = 0
     self._ckpt_count = 0
     self._finished = False
+
+  @staticmethod
+  def _validation_stage(trainer) -> str:
+    fn = getattr(trainer.state.fn, 'value', trainer.state.fn)
+    return 'post-training' if fn == 'validate' else 'in-training'
+
+  def _print_memory(self, trainer, what: str) -> None:
+    if not trainer.is_global_zero or not torch.cuda.is_available():
+      return
+    print(f'[BENCHMARK-MEM] {what}: allocated '
+          f'{torch.cuda.memory_allocated() / 2**30:.2f} GiB, reserved '
+          f'{torch.cuda.memory_reserved() / 2**30:.2f} GiB', flush=True)
+
+  def _start_recording(self, trainer, when: str) -> None:
+    if self._recording or not torch.cuda.is_available():
+      return
+    torch.cuda.memory._record_memory_history(max_entries=200_000)
+    self._recording = True
+    if trainer.is_global_zero:
+      print(f'[BENCHMARK-MEM] recording CUDA allocation history from {when}',
+            flush=True)
+
+  def _dump_snapshot(self, trainer, name: str) -> None:
+    if not self._recording:
+      return
+    output_dir = self.output_dir or os.getcwd()
+    os.makedirs(output_dir, exist_ok=True)
+    path = os.path.join(
+      output_dir, f'memory_snapshot_{name}_rank{trainer.global_rank}.pickle')
+    torch.cuda.memory._dump_snapshot(path)
+    if trainer.is_global_zero:
+      print(f'[BENCHMARK-MEM] wrote {path}', flush=True)
+
+  def on_fit_start(self, trainer, pl_module):
+    del pl_module
+    if self.memory_snapshot == 'all':
+      self._start_recording(trainer, 'the start of fit')
+
+  def on_validation_batch_start(
+      self, trainer, pl_module, batch, batch_idx, dataloader_idx=0):
+    del pl_module, batch, dataloader_idx
+    if not self._diagnostics:
+      return
+    stage = self._validation_stage(trainer)
+    if not self.gc_each_val_step:
+      self._print_memory(trainer, f'{stage} validation batch {batch_idx}')
+      return
+    before = torch.cuda.memory_allocated() if torch.cuda.is_available() else 0
+    collected = gc.collect()
+    if trainer.is_global_zero and torch.cuda.is_available():
+      after = torch.cuda.memory_allocated()
+      print(f'[BENCHMARK-MEM] {stage} validation batch {batch_idx}: allocated '
+            f'{before / 2**30:.2f} GiB before gc, {after / 2**30:.2f} GiB after '
+            f'({collected} objects collected)', flush=True)
+
+  def on_exception(self, trainer, pl_module, exception):
+    del pl_module
+    if not self._diagnostics:
+      return
+    if trainer.is_global_zero:
+      print(f'[BENCHMARK-MEM] exception: {type(exception).__name__}', flush=True)
+    self._print_memory(trainer, 'at exception')
+    try:
+      self._dump_snapshot(trainer, 'exception')
+    except Exception as dump_error:  # never mask the original exception
+      print(f'[BENCHMARK-MEM] snapshot dump failed: {dump_error}', flush=True)
 
   def _in_window(self, trainer) -> bool:
     return (self.enabled
@@ -122,6 +218,12 @@ class BenchmarkTimerCallback(L.Callback):
 
   def on_validation_start(self, trainer, pl_module):
     del pl_module
+    if self._diagnostics:
+      stage = self._validation_stage(trainer)
+      if stage == 'post-training' and self.memory_snapshot:
+        self._start_recording(trainer, 'the post-training validation')
+        self._dump_snapshot(trainer, 'postval_start')
+      self._print_memory(trainer, f'{stage} validation start')
     if not self._in_window(trainer):
       return
     _cuda_sync()
@@ -129,6 +231,11 @@ class BenchmarkTimerCallback(L.Callback):
 
   def on_validation_end(self, trainer, pl_module):
     del pl_module
+    if self._diagnostics:
+      stage = self._validation_stage(trainer)
+      self._print_memory(trainer, f'{stage} validation end')
+      if stage == 'post-training':
+        self._dump_snapshot(trainer, 'postval_end')
     if not self._in_window(trainer) or self._val_start is None:
       return
     _cuda_sync()
