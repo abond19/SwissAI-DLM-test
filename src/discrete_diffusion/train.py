@@ -115,11 +115,17 @@ def train(config):
 
   # Torch compile if enabled. Keep Lightning logging out of Dynamo
   if omegaconf.OmegaConf.select(config, 'training.torch_compile', default=False):
-    logger.info('Disabling Lightning logging methods inside torch.compile.')
-    model.log = _disable_torch_compile(model.log)
-    model.log_dict = _disable_torch_compile(model.log_dict)
-    logger.info('Compiling LightningModule with torch.compile.')
-    model = torch.compile(model)
+    if hasattr(model, 'compile_for_training'):
+      # Algorithms whose training step bypasses self.forward (e.g. GIDD)
+      # compile their hot modules in place instead.
+      logger.info('Compiling model layers and loss in place with torch.compile.')
+      model.compile_for_training()
+    else:
+      logger.info('Disabling Lightning logging methods inside torch.compile.')
+      model.log = _disable_torch_compile(model.log)
+      model.log_dict = _disable_torch_compile(model.log_dict)
+      logger.info('Compiling LightningModule with torch.compile.')
+      model = torch.compile(model)
 
   if config.training.get('fault_tolerant', False):
     os.environ.setdefault('PL_FAULT_TOLERANT_TRAINING', '1')
