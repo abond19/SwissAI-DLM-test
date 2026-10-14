@@ -678,11 +678,12 @@ class GIDD(trainer_base.TrainerBase):
   def compile_for_training(self):
     """Compile the per-step hot paths in place with ``torch.compile``.
 
-    ``nll`` calls ``self.backbone`` directly rather than ``self.forward``, so
-    compiling the LightningModule leaves the model eager.  Instead compile each
-    transformer layer (regional compilation: short compile times) and the loss.
-    ``nn.Module.compile`` works in place, so parameter names and checkpoints
-    are unchanged.
+    Compiling the whole LightningModule makes Lightning compile entire
+    ``training_step`` / ``validation_step`` calls, which also trace config
+    lookups, logging, metrics and collectives (fragile, many graph breaks).
+    Instead compile each transformer layer (regional compilation: short
+    compile times) and the loss.  ``nn.Module.compile`` works in place, so
+    parameter names and checkpoints are unchanged.
     """
     layers = getattr(getattr(getattr(self.backbone, 'model', None), 'model', None),
                      'layers', None)

@@ -126,8 +126,8 @@ def train(config):
   # Keep Lightning logging out of Dynamo
   if compile_model:
     if hasattr(model, 'compile_for_training'):
-      # Algorithms whose training step bypasses self.forward (e.g. GIDD)
-      # compile their hot modules in place instead.
+      # Regional compilation: compile the hot modules (e.g. GIDD's layers and
+      # loss) in place instead of whole training/validation steps.
       logger.info('Compiling model layers and loss in place with torch.compile.')
       model.compile_for_training()
     else:

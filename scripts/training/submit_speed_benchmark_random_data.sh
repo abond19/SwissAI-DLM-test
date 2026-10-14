@@ -54,6 +54,10 @@ BENCH_WARMUP_STEPS="${BENCH_WARMUP_STEPS:-50}"
 SYNTH_TRAIN_ROWS="${SYNTH_TRAIN_ROWS:-1000000}"
 SYNTH_VALID_ROWS="${SYNTH_VALID_ROWS:-4096}"
 SYNTH_SEED="${SYNTH_SEED:-1234}"
+# random: synthetic tokens (no disk reads).  real: the production data path
+# (nemotron-cc-pretok, verified 2B-token subset cache, lazy spawn loader), so the
+# difference between the two measures data-loading cost.
+BENCH_DATA="${BENCH_DATA:-random}"
 
 # ---------------------------------------------------------------------------
 # Settings shared by both production launchers (same defaults in each).
@@ -297,6 +301,36 @@ if [[ -z "${VENV_PYTHON:-}" ]]; then
 fi
 # Only used for the Hugging Face cache (GIDD tokenizer) and run outputs.
 DATA_ROOT="${DATA_ROOT:-/iopsstor/scratch/cscs/zdelbari/SwissAI-DLM-data}"
+PRETOK_LOCAL_DIR="${PRETOK_LOCAL_DIR:-${DATA_ROOT}/training-data/gidd-nemotron-cc-pretok}"
+DATA_CACHE_DIR="${DATA_CACHE_DIR:-${DATA_ROOT}/cache/discrete_diffusion/nemotron-cc-pretok-2b-seed4}"
+case "${BENCH_DATA}" in
+  random)
+    DATA_ARGS=(
+      data=synthetic-random-gidd
+      'data.cache_dir="${JOB_TMPDIR}/synthetic-random-gidd"'
+      "data.synthetic_train_size=${SYNTH_TRAIN_ROWS}"
+      "data.synthetic_validation_size=${SYNTH_VALID_ROWS}"
+      "data.synthetic_seed=${SYNTH_SEED}"
+    )
+    # The lazy wrapper only applies to an on-disk Arrow cache.
+    LAZY_SPAWN_DATASET=false
+    DATA_SUMMARY="synthetic-random-gidd, train rows=${SYNTH_TRAIN_ROWS}, valid rows=${SYNTH_VALID_ROWS}, seed=${SYNTH_SEED}"
+    ;;
+  real)
+    DATA_ARGS=(
+      data=nemotron-cc-pretok
+      "data.pretok_local_dir=\"${PRETOK_LOCAL_DIR}\""
+      "data.cache_dir=\"${DATA_CACHE_DIR}\""
+    )
+    LAZY_SPAWN_DATASET=true   # as in the production launchers
+    DATA_SUMMARY="nemotron-cc-pretok (real), cache ${DATA_CACHE_DIR}"
+    ;;
+  *)
+    echo "BENCH_DATA must be 'random' or 'real', got '${BENCH_DATA}'." >&2
+    exit 1
+    ;;
+esac
+DATA_ARGS_TEXT="$(printf '  %s \\\n' "${DATA_ARGS[@]}")"
 OUTPUT_ROOT="${OUTPUT_ROOT:-${DATA_ROOT}/outputs/speed_benchmark}"
 LOG_DIR="${LOG_DIR:-${REPO_ROOT}/logs/speed_benchmark}"
 WANDB_DIR="${WANDB_DIR:-${REPO_ROOT}/wandb_logs}"
@@ -305,6 +339,11 @@ RESULTS_LOG="${RESULTS_LOG:-${LOG_DIR}/results.jsonl}"
 if [[ ! "${BENCH_LABEL}" =~ ^[A-Za-z0-9._-]+$ ]]; then
   echo "BENCH_LABEL may contain only letters, digits, '.', '_' and '-'." >&2
   exit 1
+fi
+if [[ "${BENCH_DATA}" == real && "${DRY_RUN}" != "1" ]]; then
+  for p in "${PRETOK_LOCAL_DIR}" "${DATA_CACHE_DIR}"; do
+    [[ -d "${p}" ]] || { echo "Missing real-data directory: ${p} (set DATA_ROOT / PRETOK_LOCAL_DIR / DATA_CACHE_DIR)" >&2; exit 1; }
+  done
 fi
 if (( BENCH_STEPS <= BENCH_WARMUP_STEPS )); then
   echo "BENCH_STEPS (${BENCH_STEPS}) must exceed BENCH_WARMUP_STEPS (${BENCH_WARMUP_STEPS})." >&2
@@ -325,7 +364,7 @@ if [[ -n "${PARTITION}" ]]; then
 fi
 
 TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
-RUN_NAME="speedbench_${BENCH_SETUP}_${BENCH_LABEL}_L${N_BLOCKS}H${HIDDEN_SIZE}_S${SEQUENCE_LENGTH}_gbs${GBS}_lb${LOCAL_BATCH}_acc${ACC}_${MODEL_DTYPE}_${HP_TAG}_${TIMESTAMP}"
+RUN_NAME="speedbench_${BENCH_SETUP}_${BENCH_DATA}_${BENCH_LABEL}_L${N_BLOCKS}H${HIDDEN_SIZE}_S${SEQUENCE_LENGTH}_gbs${GBS}_lb${LOCAL_BATCH}_acc${ACC}_${MODEL_DTYPE}_${HP_TAG}_${TIMESTAMP}"
 RUN_STORAGE_DIR="${OUTPUT_ROOT}/${RUN_NAME}"
 
 echo "Speed benchmark on random data: setup=${BENCH_SETUP}, label=${BENCH_LABEL}"
@@ -334,7 +373,7 @@ echo "Model: ${MODEL_CONFIG}, n_blocks=${N_BLOCKS}, hidden=${HIDDEN_SIZE}, heads
 echo "Optimizer: ${SETUP_SUMMARY}, grad clip ${GRAD_CLIP}"
 echo "Launch: ${LAUNCH} | python: ${VENV_PYTHON}"
 echo "Topology: nodes=${NODES}, ranks=${NTASKS}, micro-batch=${LOCAL_BATCH}, accumulation=${ACC}, GBS=${GBS}"
-echo "Data: synthetic-random-gidd, train rows=${SYNTH_TRAIN_ROWS}, valid rows=${SYNTH_VALID_ROWS}, seed=${SYNTH_SEED}"
+echo "Data: ${DATA_SUMMARY}"
 echo "Validation every ${VAL_CHECK_INTERVAL} optimizer steps (limit_val_batches=${LIMIT_VAL_BATCHES}); checkpoint every ${CHECKPOINT_EVERY} steps"
 echo "Output: ${RUN_STORAGE_DIR}"
 echo "Results log: ${RESULTS_LOG}"
@@ -434,11 +473,7 @@ echo "Benchmarking code at \${GIT_COMMIT}"
 
 ${LAUNCH_LINES}
   seed=${SEED} \\
-  data=synthetic-random-gidd \\
-  data.cache_dir="\${JOB_TMPDIR}/synthetic-random-gidd" \\
-  data.synthetic_train_size=${SYNTH_TRAIN_ROWS} \\
-  data.synthetic_validation_size=${SYNTH_VALID_ROWS} \\
-  data.synthetic_seed=${SYNTH_SEED} \\
+${DATA_ARGS_TEXT}
   model=${MODEL_CONFIG} \\
   model.length=${SEQUENCE_LENGTH} \\
   model.max_tokens=1024 \\
@@ -473,7 +508,7 @@ ${LAUNCH_LINES}
   loader.batch_size=${LOCAL_BATCH} \\
   loader.eval_batch_size=${LOCAL_BATCH} \\
   loader.multiprocessing_context=spawn \\
-  +loader.lazy_spawn_dataset=false \\
+  +loader.lazy_spawn_dataset=${LAZY_SPAWN_DATASET} \\
   loader.num_workers=${NUM_WORKERS} \\
   loader.pin_memory=true \\
   training.antithetic_sampling=true \\
