@@ -275,14 +275,16 @@ def main():
                  help='embed:matrix:bias:norm, one or more')
   g.add_argument('--seeds', type=int, nargs='+', default=[4])
   t = p.add_argument_group('topology and estimates')
-  t.add_argument('--local-batch', type=int, default=8, help='micro-batch per GPU')
+  # fp32 SCION on one GH200: micro-batch 8 / 16 / 24 = 151k / 172k / 179k tok/s,
+  # 25 / 47 / 69 GiB.  16 is the largest that divides the BST batch sizes.
+  t.add_argument('--local-batch', type=int, default=16, help='micro-batch per GPU')
   t.add_argument('--fallback-local-batch', type=int, default=8,
                  help='used when --local-batch cannot represent a BST batch size')
   t.add_argument('--max-nodes', type=int, default=4,
                  help='cap per run; the rest is gradient accumulation (amortizes the SCION update)')
   t.add_argument('--gbs-tol', type=float, default=0.02,
                  help='relative tolerance when rounding the BST batch size')
-  t.add_argument('--throughput', type=float, default=140000,
+  t.add_argument('--throughput', type=float, default=165000,
                  help='tokens/s per GPU used for the estimates (update after benchmarking)')
   t.add_argument('--time-limit', default='12:00:00')
   t.add_argument('--chain', default='auto',
@@ -354,11 +356,22 @@ def main():
       (cache_dir / name).symlink_to(src_cache / name)
   args.log_dir.mkdir(parents=True, exist_ok=True)
 
+  # Job names already queued or running: rerunning the launcher (e.g. after a
+  # partial submission) must not start a second job on the same run directory.
+  queue = subprocess.run(['squeue', '--me', '--noheader', '--format=%j'],
+                         capture_output=True, text=True)
+  if queue.returncode != 0:
+    sys.exit('squeue failed: run the launcher on a login node, outside the container.\n'
+             + queue.stderr.strip())
+  queued = set(queue.stdout.split())
   submitted = 0
   for r in runs:
     run_dir = args.output_root / r['name']
     if (run_dir / 'DONE').exists():
       print(f'skip (finished): {r["name"]}')
+      continue
+    if r['name'] in queued:
+      print(f'skip (already queued or running): {r["name"]}')
       continue
     run_dir.mkdir(parents=True, exist_ok=True)
     meta = {k: v for k, v in r.items()}
@@ -372,7 +385,11 @@ def main():
       out = subprocess.run(['sbatch', *extra, str(run_dir / 'job.sbatch')],
                            capture_output=True, text=True)
       print(out.stdout.strip() or out.stderr.strip())
-      submitted += out.returncode == 0
+      if out.returncode != 0:
+        sys.exit(f'sbatch failed after {submitted} submitted jobs.  Submit from a login '
+                 'node, outside the container (the container lacks the Slurm client '
+                 'plugins).  Rerunning skips finished and queued runs.')
+      submitted += 1
   print(f'Submitted {submitted} jobs.')
 
 
