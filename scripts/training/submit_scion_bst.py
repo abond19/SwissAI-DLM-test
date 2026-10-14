@@ -358,8 +358,9 @@ def main():
 
   # Job names already queued or running: rerunning the launcher (e.g. after a
   # partial submission) must not start a second job on the same run directory.
-  queue = subprocess.run(['squeue', '--me', '--noheader', '--format=%j'],
-                         capture_output=True, text=True)
+  queue = subprocess.run(['squeue', '-u', getpass.getuser(), '--noheader', '--format=%j'],
+                         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                         universal_newlines=True)
   if queue.returncode != 0:
     sys.exit('squeue failed: run the launcher on a login node, outside the container.\n'
              + queue.stderr.strip())
@@ -383,7 +384,8 @@ def main():
     for _ in range(r['chain']):
       extra = ['--dependency=singleton'] if r['chain'] > 1 else []
       out = subprocess.run(['sbatch', *extra, str(run_dir / 'job.sbatch')],
-                           capture_output=True, text=True)
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                           universal_newlines=True)
       print(out.stdout.strip() or out.stderr.strip())
       if out.returncode != 0:
         sys.exit(f'sbatch failed after {submitted} submitted jobs.  Submit from a login '
