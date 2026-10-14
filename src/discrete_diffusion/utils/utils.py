@@ -4,6 +4,7 @@ Copied from https://github.com/HazyResearch/transformers/blob/master/src/utils/u
 Copied from https://docs.python.org/3/howto/logging-cookbook.html#using-a-context-manager-for-selective-logging
 """
 import logging
+import math
 import pickle
 import hashlib
 import base64
@@ -108,11 +109,16 @@ class CosineDecayWarmupLRScheduler(
       super().step_update(num_updates=self._last_epoch)
 
 
-def wsd_lr_multiplier(it, total_steps, warmup_frac=0.1, decay_frac=0.2):
+def wsd_lr_multiplier(it, total_steps, warmup_frac=0.1, decay_frac=0.2,
+                      decay_shape='linear', rec_k0_frac=0.1):
   """Warmup-stable-decay multiplier in [0, 1], as in bst-scaling ``train.get_lr``.
 
-  Linear warmup ``(it + 1) / (warmup + 1)``, constant 1, then linear decay to 0 over the last
-  ``decay_frac`` of ``total_steps``.
+  Linear warmup ``(it + 1) / (warmup + 1)``, constant 1, then a decay to 0 over the last
+  ``decay_frac`` of ``total_steps``.  With ``j`` steps into the M-step tail, ``decay_shape``:
+    linear      1 - j/M
+    cosine      (1 + cos(pi j/M)) / 2
+    reciprocal  k0/(k0 + j) * (1 - j/M), k0 = rec_k0_frac * M  (reciprocal-times-linear,
+                i.e. generalized REX with beta = 1 + M/k0)
   """
   warmup = int(round(warmup_frac * total_steps))
   cooldown = int(round(decay_frac * total_steps))
@@ -123,19 +129,32 @@ def wsd_lr_multiplier(it, total_steps, warmup_frac=0.1, decay_frac=0.2):
     return 0.0
   if it < stable_end:
     return 1.0
-  return max(0.0, 1.0 - (it - stable_end) / max(1, cooldown))
+  j = it - stable_end
+  frac = j / max(1, cooldown)
+  if decay_shape == 'linear':
+    return max(0.0, 1.0 - frac)
+  if decay_shape == 'cosine':
+    return 0.5 * (1.0 + math.cos(math.pi * frac))
+  if decay_shape == 'reciprocal':
+    k0 = max(1.0, rec_k0_frac * cooldown)
+    return max(0.0, k0 / (k0 + j) * (1.0 - frac))
+  raise ValueError(f'Unknown WSD decay_shape {decay_shape!r}')
 
 
 class WSDLRScheduler(torch.optim.lr_scheduler.LambdaLR):
   """Per-step WSD schedule; scales each param group's own LR (so muP group scales survive)."""
 
-  def __init__(self, optimizer, total_steps, warmup_frac=0.1, decay_frac=0.2):
+  def __init__(self, optimizer, total_steps, warmup_frac=0.1, decay_frac=0.2,
+               decay_shape='linear', rec_k0_frac=0.1):
     total_steps = int(total_steps)
     if total_steps <= 0:
       raise ValueError(f'WSD scheduler needs a positive step budget, got {total_steps}')
+    if decay_shape not in ('linear', 'cosine', 'reciprocal'):
+      raise ValueError(f'Unknown WSD decay_shape {decay_shape!r}')
     super().__init__(
       optimizer,
-      lambda it: wsd_lr_multiplier(it, total_steps, warmup_frac, decay_frac))
+      lambda it: wsd_lr_multiplier(it, total_steps, warmup_frac, decay_frac,
+                                   decay_shape, rec_k0_frac))
 
 
 # Copied from https://github.com/jdeschena/sdtt/blob/bbc54d5b3c5fcffd79602cff17ed34dde1f3eff6/src/sdtt/core/sampling/utils.py#L10
