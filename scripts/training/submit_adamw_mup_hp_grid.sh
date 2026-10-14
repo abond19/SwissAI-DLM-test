@@ -58,8 +58,7 @@ GRAD_CLIP="${GRAD_CLIP:-1.0}"
 WARMUP_FRAC="${WARMUP_FRAC:-0.1}"
 DECAY_FRAC="${DECAY_FRAC:-0.2}"
 NUM_WORKERS="${NUM_WORKERS:-1}"
-# Validation interval in optimizer steps; Lightning counts micro-batches, so each
-# cell passes VAL_CHECK_INTERVAL * ACC (see topology()).
+# Validation interval in optimizer steps (passed to Lightning as micro-batches).
 VAL_CHECK_INTERVAL="${VAL_CHECK_INTERVAL:-500}"
 LIMIT_VAL_BATCHES="${LIMIT_VAL_BATCHES:-0.5}"
 TRAIN_LOG_EVERY_N_STEPS="${TRAIN_LOG_EVERY_N_STEPS:-25}"

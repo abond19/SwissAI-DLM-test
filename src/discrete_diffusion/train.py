@@ -113,8 +113,7 @@ def train(config):
   model._scion_trace_dataloader = getattr(
     train_ds, '_scion_trace_dataloader', None)
 
-  # training.torch_compile: auto (default) compiles only algorithms with in-place
-  # compile support; true/false force it on/off.
+  # Torch compile: auto compiles algorithms with compile_for_training.
   compile_mode = str(omegaconf.OmegaConf.select(
     config, 'training.torch_compile', default='auto')).strip().lower()
   if compile_mode not in {'auto', 'true', 'false'}:
@@ -123,14 +122,12 @@ def train(config):
       f"{compile_mode!r}.")
   compile_model = compile_mode == 'true' or (
     compile_mode == 'auto' and hasattr(model, 'compile_for_training'))
-  # Keep Lightning logging out of Dynamo
   if compile_model:
     if hasattr(model, 'compile_for_training'):
-      # Regional compilation: compile the hot modules (e.g. GIDD's layers and
-      # loss) in place instead of whole training/validation steps.
       logger.info('Compiling model layers and loss in place with torch.compile.')
       model.compile_for_training()
     else:
+      # Keep Lightning logging out of Dynamo
       logger.info('Disabling Lightning logging methods inside torch.compile.')
       model.log = _disable_torch_compile(model.log)
       model.log_dict = _disable_torch_compile(model.log_dict)

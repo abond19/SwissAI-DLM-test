@@ -363,9 +363,7 @@ class Scion(torch.optim.Optimizer):
         if closure is not None:
             with torch.enable_grad():
                 loss = closure()
-        # Same per-parameter math as the original loop, issued per group:
-        # multi-tensor (foreach) momentum/decay/update kernels, and one batched
-        # Newton-Schulz call per matrix shape instead of one call per matrix.
+        # Foreach updates and one batched Newton-Schulz call per matrix shape.
         for group in self.param_groups:
             params = [p for p in group['params'] if p.grad is not None]
             if not params:

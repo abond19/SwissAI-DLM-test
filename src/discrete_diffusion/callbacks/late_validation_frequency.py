@@ -46,8 +46,7 @@ class LateValidationFrequencyCallback(L.Callback):
     if int(trainer.global_step) < start_step:
       return
 
-    # Integer validation intervals are measured in training batches
-    # (micro-batches); convert from optimizer steps.
+    # Lightning counts micro-batches; convert from optimizer steps.
     accumulation = max(1, int(getattr(trainer, "accumulate_grad_batches", 1) or 1))
     trainer.val_check_interval = self.every_n_steps * accumulation
     trainer.val_check_batch = self.every_n_steps * accumulation

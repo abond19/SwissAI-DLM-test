@@ -676,15 +676,7 @@ class GIDD(trainer_base.TrainerBase):
     self._global_time_lattice_shift = None
 
   def compile_for_training(self):
-    """Compile the per-step hot paths in place with ``torch.compile``.
-
-    Compiling the whole LightningModule makes Lightning compile entire
-    ``training_step`` / ``validation_step`` calls, which also trace config
-    lookups, logging, metrics and collectives (fragile, many graph breaks).
-    Instead compile each transformer layer (regional compilation: short
-    compile times) and the loss.  ``nn.Module.compile`` works in place, so
-    parameter names and checkpoints are unchanged.
-    """
+    """Compile each transformer layer and the loss in place (checkpoint keys unchanged)."""
     layers = getattr(getattr(getattr(self.backbone, 'model', None), 'model', None),
                      'layers', None)
     if layers is not None:
@@ -738,8 +730,7 @@ class GIDD(trainer_base.TrainerBase):
       return self._sample_t_fn(
         self.config, batch_size, eps=eps, device=self.device)
 
-    # OmegaConf.select: a getattr default on a missing DictConfig key raises
-    # internally and leaks this step's frames (and logits) into a GC cycle.
+    # OmegaConf.select avoids a getattr-default exception cycle that leaked logits.
     low_disc = bool(OmegaConf.select(
       self.config, 'training.low_discrepancy_sampling',
       default=OmegaConf.select(

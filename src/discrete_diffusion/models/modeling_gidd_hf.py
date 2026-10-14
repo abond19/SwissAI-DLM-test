@@ -223,8 +223,7 @@ class RotaryEmbedding(nn.Module):
             rotary_dim=self.rotary_dim,
             is_neox_style=self.is_neox_style,
             offsets=offsets,
-            # Keep the compute dtype of q/k (bf16 under autocast even with fp32
-            # weights) so flash-attn's matching-half-precision check still passes.
+            # Use q/k's compute dtype, not the weight dtype, so flash-attn stays enabled.
             dtype=query.dtype,
         )
 
@@ -607,9 +606,7 @@ class GiddAttention(nn.Module):
         elif self.attention_bias:
             n_heads = self.num_attention_heads
             bias_shape = (batch_size, 1, n_heads, self.head_dim)
-            # Cast to the compute dtype: with fp32 weights the cat would
-            # otherwise promote key/value to fp32 and disable flash-attn.
-            # Casting after expand keeps the bias-gradient batch sum in fp32.
+            # Cast so fp32 biases don't promote key/value to fp32 and disable flash-attn.
             k_bias = self.k_bias.view(1, 1, n_heads, self.head_dim).expand(bias_shape).to(key.dtype)
             v_bias = self.v_bias.view(1, 1, n_heads, self.head_dim).expand(bias_shape).to(value.dtype)
             key = torch.cat([k_bias, key], dim=1)
