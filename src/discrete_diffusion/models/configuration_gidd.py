@@ -44,6 +44,7 @@ class GiddConfig(PretrainedConfig):
         peri_ln: bool = False,
         peri_ln_affine: bool = True,
         peri_ln_embed: bool = False,
+        final_norm_affine: bool = True,
         activation_checkpointing: bool = False,
         activation_checkpoint_preserve_rng_state: bool = False,
         **kwargs,
@@ -90,5 +91,6 @@ class GiddConfig(PretrainedConfig):
         self.peri_ln = peri_ln
         self.peri_ln_affine = peri_ln_affine
         self.peri_ln_embed = peri_ln_embed
+        self.final_norm_affine = final_norm_affine
         self.activation_checkpointing = activation_checkpointing
         self.activation_checkpoint_preserve_rng_state = activation_checkpoint_preserve_rng_state

@@ -100,6 +100,7 @@ def build_gidd_config(config, vocab_size: int) -> GiddConfig:
     peri_ln=bool(getattr(model_cfg, 'peri_ln', False)),
     peri_ln_affine=bool(getattr(model_cfg, 'peri_ln_affine', True)),
     peri_ln_embed=bool(getattr(model_cfg, 'peri_ln_embed', False)),
+    final_norm_affine=bool(getattr(model_cfg, 'final_norm_affine', True)),
     activation_checkpointing=bool(
       getattr(model_cfg, 'activation_checkpointing', False)),
     activation_checkpoint_preserve_rng_state=bool(

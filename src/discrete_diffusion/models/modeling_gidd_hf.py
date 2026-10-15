@@ -825,9 +825,12 @@ class GiddModel(GiddPreTrainedModel):
                 for i in range(self.config.num_hidden_layers)
             ]
         )
+        # The final gain is redundant with lm_head (any per-feature scale folds into its
+        # columns); final_norm_affine=False removes that scale symmetry.
         self.norm = GiddRMSNorm(
             config=config,
             dtype=torch.float32,
+            affine=bool(getattr(config, "final_norm_affine", True)),
         )
         self.activation_checkpointing = bool(config.activation_checkpointing)
         self.activation_checkpoint_preserve_rng_state = bool(
