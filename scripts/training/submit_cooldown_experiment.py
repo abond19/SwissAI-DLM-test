@@ -95,7 +95,8 @@ def overrides(r, args, run_dir, cache_dir):
     f'data.cache_dir={cache_dir}',
     'model=gidd_hf_ref', 'model.parametrization=completep',
     f'model.length={args.seq_len}', 'model.max_tokens=1024',
-    f'model.n_blocks={BLOCKS}', f'model.hidden_size={HIDDEN}', f'model.n_heads={HIDDEN // 64}',
+    f'model.n_blocks={r.get("n_blocks", BLOCKS)}', f'model.hidden_size={r.get("hidden_size", HIDDEN)}',
+    f'model.n_heads={r.get("hidden_size", HIDDEN) // 64}',
     'model.dropout=0.0', 'model.activation_checkpointing=false',
     '++training.forward_autocast_dtype=bf16',
     'algo=gidd', 'algo.loss_type=gidd_easydel_lowmem', 'algo.hybrid_mixing_shift=-1000',
@@ -148,7 +149,7 @@ def overrides(r, args, run_dir, cache_dir):
     f'wandb.name={r["name"]}', f'wandb.id={r["name"][-64:]}', '+wandb.resume=allow',
     'wandb.job_type=train',
   ]
-  if r['kind'] == 'trunk':
+  if r['kind'] == 'trunk' and r.get('branch_steps'):
     o += ['+callbacks.checkpoint_at_steps._target_='
           'discrete_diffusion.callbacks.checkpoint_at_steps.CheckpointAtStepsCallback',
           f'+callbacks.checkpoint_at_steps.dirpath={run_dir}/branch_ckpts',
