@@ -5,6 +5,7 @@ Compares learning-rate tails of a warmup-stable-decay schedule over the final
 fraction rho of training (see the "two terminal cooldowns" note):
   linear      eta0 (1 - j/M)
   cosine      eta0 (1 + cos(pi j/M)) / 2
+  sqrt        eta0 (1 - sqrt(j/M))
   reciprocal  eta0 k0/(k0 + j) (1 - j/M), k0 = rec_k0_frac * M  (the proposed tail)
 plus the classic cosine schedule (warmup, then cosine to 0: the cosine tail at
 rho = 0.9 with 10% warmup).
@@ -226,7 +227,7 @@ def main():
   g.add_argument('--rhos', type=float, nargs='+', default=[0.2, 0.5],
                  help='cooldown fractions for the tail shapes')
   g.add_argument('--shapes', nargs='+', default=['linear', 'cosine', 'reciprocal'],
-                 choices=['linear', 'cosine', 'reciprocal'])
+                 choices=['linear', 'cosine', 'sqrt', 'reciprocal'])
   g.add_argument('--rec-k0-fracs', type=float, nargs='+', default=[0.05, 0.2],
                  help='reciprocal offset k0 as a fraction of the tail length M')
   g.add_argument('--no-classic-cosine', dest='classic_cosine', action='store_false',

@@ -117,6 +117,7 @@ def wsd_lr_multiplier(it, total_steps, warmup_frac=0.1, decay_frac=0.2,
   ``decay_frac`` of ``total_steps``.  With ``j`` steps into the M-step tail, ``decay_shape``:
     linear      1 - j/M
     cosine      (1 + cos(pi j/M)) / 2
+    sqrt        1 - sqrt(j/M)
     reciprocal  k0/(k0 + j) * (1 - j/M), k0 = rec_k0_frac * M  (reciprocal-times-linear,
                 i.e. generalized REX with beta = 1 + M/k0)
   """
@@ -135,6 +136,8 @@ def wsd_lr_multiplier(it, total_steps, warmup_frac=0.1, decay_frac=0.2,
     return max(0.0, 1.0 - frac)
   if decay_shape == 'cosine':
     return 0.5 * (1.0 + math.cos(math.pi * frac))
+  if decay_shape == 'sqrt':
+    return max(0.0, 1.0 - math.sqrt(frac))
   if decay_shape == 'reciprocal':
     k0 = max(1.0, rec_k0_frac * cooldown)
     return max(0.0, k0 / (k0 + j) * (1.0 - frac))
@@ -149,7 +152,7 @@ class WSDLRScheduler(torch.optim.lr_scheduler.LambdaLR):
     total_steps = int(total_steps)
     if total_steps <= 0:
       raise ValueError(f'WSD scheduler needs a positive step budget, got {total_steps}')
-    if decay_shape not in ('linear', 'cosine', 'reciprocal'):
+    if decay_shape not in ('linear', 'cosine', 'sqrt', 'reciprocal'):
       raise ValueError(f'Unknown WSD decay_shape {decay_shape!r}')
     super().__init__(
       optimizer,

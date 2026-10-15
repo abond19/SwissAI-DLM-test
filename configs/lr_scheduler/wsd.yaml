@@ -3,5 +3,5 @@ _target_: src.discrete_diffusion.utils.WSDLRScheduler
 total_steps: ${trainer.max_steps}
 warmup_frac: 0.1
 decay_frac: 0.2
-decay_shape: linear   # linear | cosine | reciprocal (reciprocal-times-linear)
+decay_shape: linear   # linear | cosine | sqrt (1 - sqrt) | reciprocal (reciprocal-times-linear)
 rec_k0_frac: 0.1      # reciprocal only: k0 as a fraction of the decay steps
