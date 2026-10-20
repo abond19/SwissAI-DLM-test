@@ -13,9 +13,11 @@ set -euo pipefail
 #   momentum  alpha at 1/2x and 2x (2 runs)
 #   refine    5 betas around BEST_BETA, if radii or momentum moved (5 runs)
 #   seeds     seeds 5 and 6 at the best point, for the noise band (2 runs)
+#   warmup    linear warmup of 1%, 2% and 5% at the best point, against the
+#             existing 0% run (3 runs; WARMUP_FRACS overrides the list)
 # Rank with scripts/analysis/eval_final_val_nll.py + bst_scion_analysis.py.
 
-STAGE="${1:?usage: $0 grid|radii|momentum|refine|seeds [--submit] [launcher args]}"
+STAGE="${1:?usage: $0 grid|radii|momentum|refine|seeds|warmup [--submit] [launcher args]}"
 shift
 LAUNCH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/submit_scion_bst.py"
 
@@ -67,8 +69,13 @@ case "${STAGE}" in
     python3 "${LAUNCH}" --multipliers 1 --batch-sizes "${BEST_GBS}" --betas "${BEST_BETA}" \
       --momenta "${BEST_MOMENTUM}" --radii "${BEST_RADII}" --seeds 5 6 "$@"
     ;;
+  warmup)
+    python3 "${LAUNCH}" --multipliers 1 --batch-sizes "${BEST_GBS}" --betas "${BEST_BETA}" \
+      --momenta "${BEST_MOMENTUM}" --radii "${BEST_RADII}" \
+      --warmup-fracs ${WARMUP_FRACS:-0.01 0.02 0.05} "$@"
+    ;;
   *)
-    echo "Unknown stage '${STAGE}' (grid|radii|momentum|refine|seeds)." >&2
+    echo "Unknown stage '${STAGE}' (grid|radii|momentum|refine|seeds|warmup)." >&2
     exit 1
     ;;
 esac

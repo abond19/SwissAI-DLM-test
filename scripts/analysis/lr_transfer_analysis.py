@@ -4,7 +4,8 @@
 For every width: final fixed-noise validation NLL (eval_final_val_nll.py) and the
 train ELBO averaged over the last --train-frac of steps, against the learning-rate
 multiplier; the interpolated optimum (quadratic in log LR through the best point
-and its neighbours); and whether it is bracketed.  muP transfers the learning rate
+and its neighbours); fitted with a parabola in log LR through all points (mean over seeds), with an
+uncertainty, so single noisy runs do not decide the optimum.  muP transfers the learning rate
 if the optimal multiplier is the same at every width.  The fitted drift
 d log2(multiplier*) / d log2(width) is printed: 0 means perfect transfer.
 
@@ -20,7 +21,6 @@ from collections import defaultdict
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from bst_scion_analysis import optimum  # noqa: E402
 from cooldown_analysis import read_curves  # noqa: E402
 
 
@@ -45,48 +45,79 @@ def main():
       tail = [v for s, v in train if s > (1 - args.train_frac) * r['max_steps']]
       r['train_final'] = sum(tail) / len(tail) if tail else None
       r['curve'] = train
+      for k in ('final_val', 'train_final'):  # diverged runs (NaN / inf) are dropped
+        if r[k] is not None and not math.isfinite(r[k]):
+          r[k] = None
+          r['diverged'] = True
       runs.append(r)
   if not runs:
     sys.exit('No runs found.')
 
+  import numpy as np
+
+  # One curve per (experiment, width): mean over seeds at each multiplier.
   series = defaultdict(list)
   for r in runs:
-    series[(r['experiment'], r['hidden_size'], r['seed'])].append(r)
+    series[(r['experiment'], r['hidden_size'])].append(r)
   rows, optima = [], {}
   for key in sorted(series):
-    exp, width, seed = key
-    rs = sorted(series[key], key=lambda r: r['eta_mult'])
-    pts = [(r['eta_mult'], r[args.metric]) for r in rs]
-    best, star, bracketed = optimum(pts)
-    print(f'{exp}  width={width}  seed={seed}  ({args.metric})')
-    for r in rs:
-      v = r[args.metric]
-      mark = ' <- best' if r['eta_mult'] == best else ''
-      print(f'  x{r["eta_mult"]:<6g} {"pending" if v is None else f"{v:.4f}"}{mark}')
-      rows.append(dict(experiment=exp, width=width, seed=seed, eta_mult=r['eta_mult'],
+    exp, width = key
+    by_mult = defaultdict(list)
+    for r in series[key]:
+      if r[args.metric] is not None:
+        by_mult[r['eta_mult']].append(r[args.metric])
+      rows.append(dict(experiment=exp, width=width, seed=r['seed'], eta_mult=r['eta_mult'],
                        eta=r['eta'], final_val=r['final_val'], train_final=r['train_final']))
-    if star is not None:
-      optima[key] = (star, bracketed)
-      print(f'  optimum x{star:.3g} ({"bracketed" if bracketed else "NOT bracketed: extend the grid"})')
+    diverged = sorted({r['eta_mult'] for r in series[key] if r.get('diverged')})
+    if diverged:
+      print(f'  diverged (left out of the fit): ' + ', '.join(f'x{m:g}' for m in diverged))
+    mults = sorted(by_mult)
+    means = [float(np.mean(by_mult[m])) for m in mults]
+    print(f'{exp}  width={width}  ({args.metric}, mean over seeds)')
+    for m_, v in zip(mults, means):
+      n = len(by_mult[m_])
+      spread = f' +- {np.std(by_mult[m_], ddof=1) / np.sqrt(n):.4f}' if n > 1 else ''
+      print(f'  x{m_:<6g} {v:.4f}{spread}  (n={n})')
+    if len(mults) < 5:
+      print('  need >= 5 multipliers for the parabola fit\n')
+      continue
+    # Parabola in u = log2(multiplier) through ALL points: robust to single noisy runs.
+    u = np.log2(mults)
+    coef, cov = np.polyfit(u, means, 2, cov=True)
+    c, b, a = coef
+    resid = np.array(means) - np.polyval(coef, u)
+    rms = float(np.sqrt(np.mean(resid ** 2)))
+    if c <= 0:
+      print(f'  no minimum: the fitted parabola opens downward (residual rms {rms:.4f}); '
+            'noise dominates or the grid misses the walls\n')
+      continue
+    u_star = -b / (2 * c)
+    grad = np.array([b / (2 * c * c), -1 / (2 * c)])  # d u* / d(c, b)
+    se = float(np.sqrt(grad @ cov[:2, :2] @ grad))
+    inside = u.min() <= u_star <= u.max()
+    optima[key] = (u_star, se, inside)
+    print(f'  parabola optimum x{2 ** u_star:.3g}  (log2 = {u_star:+.2f} +- {se:.2f}; '
+          f'residual rms {rms:.4f}; curvature {c:.4f} +- {np.sqrt(cov[0, 0]):.4f})'
+          + ('' if inside else '  OUTSIDE the grid: extend it'))
     print()
 
   by_exp = defaultdict(list)
-  for (exp, width, seed), (star, bracketed) in optima.items():
-    by_exp[exp].append((width, star, bracketed))
+  for (exp, width), (u_star, se, inside) in optima.items():
+    by_exp[exp].append((width, u_star, se, inside))
   for exp, pts in by_exp.items():
-    if len({w for w, _, _ in pts}) < 2:
+    if len(pts) < 2:
       continue
-    xs = [math.log2(w) for w, _, _ in pts]
-    ys = [math.log2(s) for _, s, _ in pts]
-    xm, ym = sum(xs) / len(xs), sum(ys) / len(ys)
-    slope = (sum((x - xm) * (y - ym) for x, y in zip(xs, ys))
-             / max(1e-12, sum((x - xm) ** 2 for x in xs)))
-    widths = sorted({w for w, _, _ in pts})
-    shift = 2 ** (slope * (math.log2(widths[-1]) - math.log2(widths[0])))
-    print(f'{exp}: optimum drifts as width^{slope:+.3f}  '
-          f'(x{shift:.2f} from width {widths[0]} to {widths[-1]}; 0 = perfect transfer)')
-    if not all(b for _, _, b in pts):
-      print('  some optima are at the grid edge; the drift is a lower bound')
+    x = np.log2([w for w, *_ in pts])
+    y = np.array([us for _, us, _, _ in pts])
+    wts = 1 / np.maximum(np.array([se for _, _, se, _ in pts]), 1e-3) ** 2
+    xm = np.sum(wts * x) / np.sum(wts)
+    slope = float(np.sum(wts * (x - xm) * y) / np.sum(wts * (x - xm) ** 2))
+    slope_se = float(np.sqrt(1 / np.sum(wts * (x - xm) ** 2)))
+    span = x.max() - x.min()
+    print(f'{exp}: optimum drifts as width^{slope:+.3f} +- {slope_se:.3f}  '
+          f'(x{2 ** (slope * span):.2f} across the widths; 0 = perfect transfer)')
+    if abs(slope) < 2 * slope_se:
+      print('  -> consistent with no drift at this precision')
 
   with open(out / 'lr_transfer.csv', 'w', newline='') as f:
     w = csv.DictWriter(f, fieldnames=list(rows[0]))
@@ -104,13 +135,13 @@ def main():
   keys = sorted(series)
   widths = sorted({k[1] for k in keys})
   for key in keys:
-    exp, width, seed = key
+    exp, width = key
     color = cmap(widths.index(width) / max(1, len(widths) - 1))
     ls = '-' if 'noperiln' not in exp else '--'
     for i, metric in enumerate(('final_val', 'train_final')):
       pts = sorted((r['eta_mult'], r[metric]) for r in series[key] if r[metric] is not None)
       if pts:
-        ax[i].plot(*zip(*pts), 'o' + ls, color=color, label=f'{exp} w={width} s={seed}')
+        ax[i].plot(*zip(*pts), 'o' + ls, color=color, label=f'{exp} w={width}')
         b = min(pts, key=lambda q: q[1])
         ax[i].plot(*b, 'D', color='gold', mec='k', zorder=5)
   for i, title in enumerate(('Final validation NLL (fixed noise)', 'Train ELBO (end of run)')):

@@ -153,7 +153,7 @@ def main():
   runs = load_runs(args.roots)
   for r in runs:
     summarize(r, args.train_window, args.precooldown_steps)
-  cols = ['name', 'multiplier', 'tokens', 'gbs', 'beta', 'momentum', 'radii', 'seed',
+  cols = ['name', 'multiplier', 'tokens', 'gbs', 'beta', 'momentum', 'radii', 'seed', 'warmup_frac',
           'done', 'final_val', 'train_final', 'train_precooldown', 'val_precooldown',
           'tokens_precooldown', 'run_dir']
   with open(out / 'summary.csv', 'w', newline='') as f:
@@ -164,16 +164,17 @@ def main():
   # Per (budget, batch, momentum, radii, seed) series: loss against beta.
   series = defaultdict(list)
   for r in runs:
-    series[(r['multiplier'], r['gbs'], float(r['momentum']), r['radii'], r['seed'])].append(r)
+    series[(r['multiplier'], r['gbs'], float(r['momentum']), r['radii'], r['seed'],
+            float(r.get('warmup_frac', 0.0)))].append(r)
   base = {}
   print(f'Metric: {args.metric}\n')
   for key in sorted(series):
-    m, gbs, mom, radii, seed = key
+    m, gbs, mom, radii, seed, warmup = key
     rs = sorted(series[key], key=lambda r: r['beta'])
     pts = [(r['beta'], r[args.metric]) for r in rs]
     best, star, bracketed = optimum(pts)
     print(f'm={m:g} T={rs[0]["tokens"] / 1e9:.1f}B GBS={gbs} momentum={mom:g} '
-          f'radii={radii} seed={seed}')
+          f'radii={radii} seed={seed} warmup={warmup:g}')
     for r in rs:
       v = r[args.metric]
       mark = ' <- best' if r['beta'] == best else ''
@@ -186,6 +187,7 @@ def main():
         print('  next: ' + (' '.join(f'{b:.3g}' for b in nxt) if nxt else 'none needed'))
     print()
     if (math.isclose(mom, args.momentum) and radii == args.radii and seed == args.seed
+        and warmup == 0
         and (m not in base or len(rs) > len(base[m]))):
       base[m] = rs
 

@@ -115,10 +115,12 @@ def build_runs(args):
         embed, matrix, bias, norm = radii.split(':')
         for alpha in args.momenta:
           for beta in args.betas:
+           for wu in args.warmup_fracs:
             for seed in args.seeds:
               name = (f'scion_bst_m{tag(m)}_gbs{gbs}_beta{tag(beta)}_a{tag(alpha)}'
                       + ('' if radii == DEFAULT_RADII else
                          f'_r{tag(embed)}-{tag(matrix)}-{tag(bias)}-{tag(norm)}')
+                      + (f'_wu{tag(wu)}' if wu > 0 else '')
                       + f'_s{seed}{args.name_suffix}')
               gpu_h = steps * gbs * args.seq_len / args.throughput / 3600 * 1.03
               wall_h = gpu_h / ranks + 0.1
@@ -130,7 +132,8 @@ def build_runs(args):
                 scale_embed=embed, scale_matrix=matrix, scale_bias=bias, scale_norm=norm,
                 seed=int(seed), local_batch=lb, ranks=ranks,
                 nodes=ranks // GPUS_PER_NODE, accumulation=acc, max_steps=steps,
-                warmdown_steps=steps * 28 // 100, est_gpu_hours=gpu_h, est_wall_hours=wall_h))
+                warmdown_steps=steps * 28 // 100, warmup_frac=wu,
+                warmup_steps=int(round(wu * steps)), est_gpu_hours=gpu_h, est_wall_hours=wall_h))
   return runs
 
 
@@ -207,7 +210,7 @@ def job_script(run, args, run_dir, cache_dir):
     f'optim.scale_embed={run["scale_embed"]}', f'optim.scale_bias={run["scale_bias"]}',
     f'optim.scale_layer_norm={run["scale_norm"]}', f'optim.scale_matrix={run["scale_matrix"]}',
     'optim.bias_norm=RowNorm', 'optim.norm_layer_norm=BiasRMS', 'optim.spectral_norm_steps=5',
-    'optim.unconstrained=false', 'optim.warmup_iters=0',
+    'optim.unconstrained=false', f'optim.warmup_iters={run["warmup_steps"]}',
     f'optim.warmdown_iters={run["warmdown_steps"]}', 'optim.min_lr=1e-8',
     'optim.trace_enabled=false', 'optim.trace_collect_noise_stats=false',
     f'hydra.run.dir={run_dir}/hydra/${{SLURM_JOB_ID}}',
@@ -274,6 +277,8 @@ def main():
   g.add_argument('--radii', nargs='+', default=[DEFAULT_RADII],
                  help='embed:matrix:bias:norm, one or more')
   g.add_argument('--seeds', type=int, nargs='+', default=[4])
+  g.add_argument('--warmup-fracs', type=float, nargs='+', default=[0.0],
+                 help='linear warmup as a fraction of the run (0 = none)')
   t = p.add_argument_group('topology and estimates')
   # fp32 SCION on one GH200: micro-batch 8 / 16 / 24 = 151k / 172k / 179k tok/s,
   # 25 / 47 / 69 GiB.  16 is the largest that divides the BST batch sizes.
