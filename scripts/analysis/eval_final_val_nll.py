@@ -105,6 +105,26 @@ def pending_runs(roots, args):
   return pending
 
 
+class Progress(L.Callback):
+  """Prints batches done, s/batch and an ETA (prints only; no RNG use)."""
+
+  def __init__(self, total, every):
+    self.total, self.every, self.start = total, max(1, every), None
+
+  def on_validation_start(self, trainer, pl_module):
+    self.start = time.time()
+
+  def on_validation_batch_end(self, trainer, pl_module, outputs, batch, batch_idx,
+                              dataloader_idx=0):
+    done = batch_idx + 1
+    if done % self.every and done != self.total:
+      return
+    elapsed = time.time() - self.start
+    left = (self.total - done) * elapsed / done
+    print(f'    batch {done}/{self.total}: {elapsed / done:.3f} s/batch, '
+          f'{elapsed / 60:.1f} min elapsed, ~{left / 60:.1f} min left', flush=True)
+
+
 def evaluate(run, args):
   cfg = load_config(run)
   ckpt = run / 'checkpoints' / 'last.ckpt'
@@ -133,10 +153,16 @@ def evaluate(run, args):
   tokenizer = get_tokenizer(cfg)
   _, valid_loader = get_dataloaders(cfg, tokenizer, skip_train=True)
   model = hydra.utils.get_class(cfg.algo._target_)(cfg, tokenizer=tokenizer)
+  num_batches = len(valid_loader)
+  if args.limit_val_batches <= 1:
+    num_batches = max(1, int(num_batches * args.limit_val_batches))
+  print(f'  {len(valid_loader.dataset)} sequences, {num_batches} batches of '
+        f'{args.eval_batch_size}', flush=True)
   trainer = L.Trainer(
     **omegaconf.OmegaConf.to_container(cfg.trainer, resolve=True),
     default_root_dir=str(run / 'final_eval_scratch'),
-    callbacks=[], logger=False, enable_checkpointing=False,
+    callbacks=[Progress(num_batches, args.progress_every)], logger=False,
+    enable_checkpointing=False,
     enable_progress_bar=False,
     strategy=hydra.utils.instantiate(cfg.strategy))
   # The seed above fixes the noise for the whole pass (validation reads the
@@ -166,6 +192,8 @@ def main():
   p.add_argument('--eval_batch_size', type=int, default=8)
   p.add_argument('--limit_val_batches', type=float, default=1.0)
   p.add_argument('--num_workers', type=int, default=2)
+  p.add_argument('--progress_every', type=int, default=250,
+                 help='print progress every this many batches')
   p.add_argument('--force', action='store_true')
   p.add_argument('--allow_unfinished', action='store_true')
   args = p.parse_args()
