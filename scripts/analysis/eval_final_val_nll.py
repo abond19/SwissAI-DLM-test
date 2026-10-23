@@ -16,14 +16,16 @@ For every run directory under the given roots (a directory containing
 evaluations are skipped unless --force.  Runs that have not reached their
 ``trainer.max_steps`` are skipped.
 
-Parallel use: under ``srun --ntasks=N`` each task takes every N-th run and
-binds to GPU ``SLURM_LOCALID``; see submit_eval_final_val_nll.sh.
+Parallel use: under ``srun --ntasks=N`` each task takes every N-th run still to
+evaluate (finished, no result yet), so the shards stay balanced, and
+binds to GPU ``SLURM_LOCALID``; see run_eval_final_val_nll.sh.
 """
 
 import argparse
 import json
 import os
 import sys
+import time
 from pathlib import Path
 
 # One GPU per task, chosen before torch initializes CUDA.  The loaders assert
@@ -73,16 +75,41 @@ def load_config(run):
   return omegaconf.OmegaConf.load(configs[-1])
 
 
+def checkpoint_step(run):
+  # mmap: read only the counters, not the weights.
+  state = torch.load(run / 'checkpoints' / 'last.ckpt', map_location='cpu',
+                     mmap=True, weights_only=False)
+  return int(state.get('global_step', -1))
+
+
+def pending_runs(roots, args):
+  """Runs still to evaluate: finished training, no result yet (or --force).
+
+  Every shard computes this same list and then takes every N-th entry, so the
+  work is split evenly however many runs are already evaluated or unfinished.
+  """
+  pending = []
+  for run in find_runs(roots):
+    if (run / 'final_val_nll.json').exists() and not args.force:
+      continue
+    if not args.allow_unfinished:
+      try:
+        step, max_steps = checkpoint_step(run), int(load_config(run).trainer.max_steps)
+      except Exception as e:  # noqa: BLE001 - leave it for evaluate() to report
+        step, max_steps = None, f'{type(e).__name__}: {e}'
+      if step is not None and step < max_steps:
+        if _SHARD == 0:
+          print(f'  skip (unfinished, step {step}/{max_steps}): {run.name}', flush=True)
+        continue
+    pending.append(run)
+  return pending
+
+
 def evaluate(run, args):
   cfg = load_config(run)
   ckpt = run / 'checkpoints' / 'last.ckpt'
-  # mmap: read only the counters, not the weights.
-  state = torch.load(ckpt, map_location='cpu', mmap=True, weights_only=False)
-  global_step = int(state.get('global_step', -1))
-  del state
-  max_steps = int(cfg.trainer.max_steps)
-  if global_step < max_steps and not args.allow_unfinished:
-    return {'status': f'unfinished: step {global_step} < {max_steps}'}
+  global_step = checkpoint_step(run)
+  start = time.time()
 
   # Fixed evaluation topology: one device, fixed eval batch, whole split.
   cfg.trainer.devices = 1
@@ -115,12 +142,15 @@ def evaluate(run, args):
   # The seed above fixes the noise for the whole pass (validation reads the
   # global RNG only).
   L.seed_everything(args.seed, verbose=False)
+  setup_seconds = time.time() - start
   metrics = trainer.validate(model, dataloaders=valid_loader,
                              ckpt_path=str(ckpt), verbose=False)
   result = {k: float(v) for k, v in (metrics[0] if metrics else {}).items()}
   result.update(status='ok', global_step=global_step, eval_seed=args.seed,
                 eval_batch_size=args.eval_batch_size,
-                limit_val_batches=args.limit_val_batches)
+                limit_val_batches=args.limit_val_batches,
+                setup_seconds=round(setup_seconds, 1),
+                validate_seconds=round(time.time() - start - setup_seconds, 1))
   del model, trainer, valid_loader
   torch.cuda.empty_cache()
   return result
@@ -141,13 +171,12 @@ def main():
   args = p.parse_args()
 
   results_path = args.results or Path(args.roots[0]) / 'final_val_nll.jsonl'
-  runs = find_runs(args.roots)[_SHARD::_NUM_SHARDS]
-  print(f'[shard {_SHARD}/{_NUM_SHARDS}] {len(runs)} runs', flush=True)
+  pending = pending_runs(args.roots, args)
+  runs = pending[_SHARD::_NUM_SHARDS]
+  print(f'[shard {_SHARD}/{_NUM_SHARDS}] {len(runs)} of {len(pending)} runs to evaluate',
+        flush=True)
   for i, run in enumerate(runs):
     out = run / 'final_val_nll.json'
-    if out.exists() and not args.force:
-      print(f'  skip (done): {run.name}', flush=True)
-      continue
     print(f'[{i + 1}/{len(runs)}] {run.name}', flush=True)
     try:
       result = evaluate(run, args)
@@ -158,7 +187,9 @@ def main():
     meta = run / 'run_meta.json'
     if meta.exists():
       result['meta'] = json.loads(meta.read_text())
-    print(f'  {result.get("status")} val/nll={result.get("val/nll")}', flush=True)
+    print(f'  {result.get("status")} val/nll={result.get("val/nll")} '
+          f'(setup {result.get("setup_seconds")} s, validate {result.get("validate_seconds")} s)',
+          flush=True)
     if result['status'] == 'ok':
       out.write_text(json.dumps(result, indent=2))
     with open(results_path, 'a') as f:
