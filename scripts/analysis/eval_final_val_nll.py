@@ -43,6 +43,7 @@ elif ',' in _visible:
 for _var in ('SLURM_NTASKS', 'SLURM_NTASKS_PER_NODE'):
   os.environ.pop(_var, None)
 
+_T0 = time.time()
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT / 'src'))
 sys.path.insert(0, str(REPO_ROOT))
@@ -54,6 +55,11 @@ import torch  # noqa: E402
 
 import discrete_diffusion.__main__  # noqa: E402,F401  (registers OmegaConf resolvers)
 from discrete_diffusion.data import get_dataloaders, get_tokenizer  # noqa: E402
+
+
+def log(msg):
+  """Print with the time since this process started, to see where time goes."""
+  print(f'[+{time.time() - _T0:6.0f}s] {msg}', flush=True)
 
 
 def find_runs(roots):
@@ -92,7 +98,14 @@ def pending_runs(roots, args):
   for run in find_runs(roots):
     if (run / 'final_val_nll.json').exists() and not args.force:
       continue
-    if not args.allow_unfinished:
+    if (run / 'run_meta.json').exists() and not args.allow_unfinished:
+      # Launcher runs: the job touches DONE after training finishes, which
+      # avoids opening every checkpoint here.
+      if not (run / 'DONE').exists():
+        if _SHARD == 0:
+          print(f'  skip (unfinished, no DONE): {run.name}', flush=True)
+        continue
+    elif not args.allow_unfinished:
       try:
         step, max_steps = checkpoint_step(run), int(load_config(run).trainer.max_steps)
       except Exception as e:  # noqa: BLE001 - leave it for evaluate() to report
@@ -112,6 +125,7 @@ class Progress(L.Callback):
     self.total, self.every, self.start = total, max(1, every), None
 
   def on_validation_start(self, trainer, pl_module):
+    log('  checkpoint loaded, validating')
     self.start = time.time()
 
   def on_validation_batch_end(self, trainer, pl_module, outputs, batch, batch_idx,
@@ -151,8 +165,11 @@ def evaluate(run, args):
   torch.set_float32_matmul_precision('high')
   L.seed_everything(args.seed, verbose=False)
   tokenizer = get_tokenizer(cfg)
+  log('  tokenizer loaded')
   _, valid_loader = get_dataloaders(cfg, tokenizer, skip_train=True)
+  log('  validation data loaded')
   model = hydra.utils.get_class(cfg.algo._target_)(cfg, tokenizer=tokenizer)
+  log('  model built')
   num_batches = len(valid_loader)
   if args.limit_val_batches <= 1:
     num_batches = max(1, int(num_batches * args.limit_val_batches))
@@ -199,13 +216,13 @@ def main():
   args = p.parse_args()
 
   results_path = args.results or Path(args.roots[0]) / 'final_val_nll.jsonl'
+  log(f'started (torch threads: {torch.get_num_threads()})')
   pending = pending_runs(args.roots, args)
   runs = pending[_SHARD::_NUM_SHARDS]
-  print(f'[shard {_SHARD}/{_NUM_SHARDS}] {len(runs)} of {len(pending)} runs to evaluate',
-        flush=True)
+  log(f'[shard {_SHARD}/{_NUM_SHARDS}] {len(runs)} of {len(pending)} runs to evaluate')
   for i, run in enumerate(runs):
     out = run / 'final_val_nll.json'
-    print(f'[{i + 1}/{len(runs)}] {run.name}', flush=True)
+    log(f'[{i + 1}/{len(runs)}] {run.name}')
     try:
       result = evaluate(run, args)
     except Exception as e:  # noqa: BLE001 - keep going through the other runs
@@ -215,9 +232,8 @@ def main():
     meta = run / 'run_meta.json'
     if meta.exists():
       result['meta'] = json.loads(meta.read_text())
-    print(f'  {result.get("status")} val/nll={result.get("val/nll")} '
-          f'(setup {result.get("setup_seconds")} s, validate {result.get("validate_seconds")} s)',
-          flush=True)
+    log(f'  {result.get("status")} val/nll={result.get("val/nll")} '
+        f'(setup {result.get("setup_seconds")} s, validate {result.get("validate_seconds")} s)')
     if result['status'] == 'ok':
       out.write_text(json.dumps(result, indent=2))
     with open(results_path, 'a') as f:

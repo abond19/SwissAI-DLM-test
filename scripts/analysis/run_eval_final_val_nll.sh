@@ -28,7 +28,10 @@ ENV_SETUP="cd '${REPO_ROOT}'
 export PYTHONPATH='${REPO_ROOT}:${REPO_ROOT}/src' PYTHONNOUSERSITE=1 HYDRA_FULL_ERROR=1
 export HF_HOME='${DATA_ROOT}/cache/hf'
 export HF_DATASETS_CACHE=\"\${HF_HOME}/datasets\" HUGGINGFACE_HUB_CACHE=\"\${HF_HOME}/hub\" TRANSFORMERS_CACHE=\"\${HF_HOME}/transformers\"
-export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True WANDB_MODE=disabled"
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True WANDB_MODE=disabled
+# Several evaluators share a node: without a cap each starts one CPU thread per
+# core, and the oversubscribed CPU work (model init, checkpoint load) crawls.
+export OMP_NUM_THREADS=\${OMP_NUM_THREADS:-16}"
 ROOTS="$(printf "'%s' " "$@")"
 
 if [[ "${SBATCH:-0}" == "1" ]]; then
