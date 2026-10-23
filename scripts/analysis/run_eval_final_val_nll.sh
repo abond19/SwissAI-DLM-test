@@ -51,7 +51,7 @@ pids=()
 for ((i = 0; i < NUM_GPUS; i++)); do
   SLURM_PROCID=$i SLURM_LOCALID=$i SLURM_NTASKS=${NUM_GPUS} \
     "${PYTHON}" -u scripts/analysis/eval_final_val_nll.py "$@" ${EVAL_ARGS} \
-    > "${DATA_ROOT}/eval_final_val_nll_gpu$i.log" 2>&1 &
+    > >(tee "${DATA_ROOT}/eval_final_val_nll_gpu$i.log" | sed -u "s/^/[gpu$i] /") 2>&1 &
   pids+=($!)
 done
 echo "Running ${NUM_GPUS} evaluators; logs: ${DATA_ROOT}/eval_final_val_nll_gpu*.log"
